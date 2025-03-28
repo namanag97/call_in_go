@@ -13,7 +13,7 @@ import (
 	"github.com/namanag97/call_in_go/call-processor/internal/domain"
 	"github.com/namanag97/call_in_go/call-processor/internal/event"
 	"github.com/namanag97/call_in_go/call-processor/internal/repository"
-	"github.com/namanag97/call_in_go/call-processor/internal/worker"
+	"github.com/namanag97/call_in_go/call-processor/internal/analysis"
 )
 
 // Service errors
