@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/namanag97/call_in_go/call-processor/domain"
-	"github.com/namanag97/call_in_go/call-processor/event"
-	"github.com/namanag97/call_in_go/call-processor/repository"
-	"github.com/namanag97/call_in_go/call-processor/worker"
+	"github.com/namanag97/call_in_go/call-processor/internal/domain"
+	"github.com/namanag97/call_in_go/call-processor/internal/event"
+	"github.com/namanag97/call_in_go/call-processor/internal/repository"
+	"github.com/namanag97/call_in_go/call-processor/internal/worker"
 )
 
 // Service errors

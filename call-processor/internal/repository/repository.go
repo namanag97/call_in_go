@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
-	"github.com/namanag97/call_in_go/call-processor/domain"
+	"github.com/namanag97/call_in_go/call-processor/internal/domain"
 )
 
 // Repository errors
@@ -289,7 +289,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
-	"github.com/namanag97/call_in_go/call-processor/domain"
+	"github.com/namanag97/call_in_go/call-processor/internal/domain"
 )
 
 // Repository errors
@@ -449,7 +449,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
-	"github.com/namanag97/call_in_go/call-processor/domain"
+	"github.com/namanag97/call_in_go/call-processor/internal/domain"
 )
 
 // Repository errors
