@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings" // Add this import
 	"time"
+	"context"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -741,11 +742,12 @@ func (c *TranscriptionController) ImportTranscriptionsFromCSV(ctx *gin.Context) 
 		}
 
 		// Create the transcription
+		now := time.Now()
 		transcription := &domain.Transcription{
 			RecordingID: recordingID,
 			FullText:    transcript,
 			Status:      domain.TranscriptionStatusCompleted,
-			CompletedAt: time.Now(),
+			CompletedAt: &now,
 		}
 
 		err = c.transcriptionRepo.Create(ctx, transcription)
@@ -771,37 +773,41 @@ func (c *TranscriptionController) ImportTranscriptionsFromCSV(ctx *gin.Context) 
 
 // createRecordingIfNotExists creates a recording entry if it doesn't exist yet
 func (c *TranscriptionController) createRecordingIfNotExists(ctx context.Context, filename string, durationSec float64) (uuid.UUID, error) {
-	// Check if recording exists by filename
-	recordings, _, err := c.transcriptionRepo.GetRecordingByFilename(ctx, filename)
-	if err != nil && !errors.Is(err, repository.ErrNotFound) {
-		return uuid.Nil, err
-	}
+    // Check if recording exists by filename
+    recordings, _, err := c.transcriptionRepo.GetRecordingByFilename(ctx, filename)
+    if err != nil && !errors.Is(err, repository.ErrNotFound) {
+        return uuid.Nil, err
+    }
 
-	if len(recordings) > 0 {
-		return recordings[0].ID, nil
-	}
+    if len(recordings) > 0 {
+        return recordings[0].ID, nil
+    }
 
-	// Create a new recording entry
-	recording := &domain.Recording{
-		ID:              uuid.New(),
-		FileName:        filename,
-		FilePath:        fmt.Sprintf("imported/%s", filename),
-		FileSize:        0, // Unknown
-		DurationSeconds: int(durationSec),
-		MimeType:        "audio/mpeg", // Assume audio file
-		MD5Hash:         "imported-no-hash", // Placeholder
-		Status:          domain.RecordingStatusCompleted,
-		Source:          "csv-import",
-		CreatedAt:       time.Now(),
-		UpdatedAt:       time.Now(),
-	}
+    // Create a new recording entry
+    recordingID := uuid.New()
+    now := time.Now()
+    durationInt := int(durationSec)
+    
+    recording := &domain.Recording{
+        ID:              recordingID,
+        FileName:        filename,
+        FilePath:        fmt.Sprintf("imported/%s", filename),
+        FileSize:        0, // Unknown
+        DurationSeconds: &durationInt,
+        MimeType:        "audio/mpeg", // Assume audio file
+        MD5Hash:         "imported-no-hash", // Placeholder
+        Status:          domain.RecordingStatusCompleted,
+        Source:          "csv-import",
+        CreatedAt:       now,
+        UpdatedAt:       now,
+    }
 
-	err = c.transcriptionRepo.CreateRecording(ctx, recording)
-	if err != nil {
-		return uuid.Nil, err
-	}
+    err = c.transcriptionRepo.CreateRecording(ctx, recording)
+    if err != nil {
+        return uuid.Nil, err
+    }
 
-	return recording.ID, nil
+    return recordingID, nil
 }
 
 // AnalysisController handles analysis-related API endpoints

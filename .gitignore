@@ -46,4 +46,11 @@ build/
 
 # Go debug files
 debug
-__debug_bin 
+__debug_bin
+
+# Call transcript files
+**/call_transcript*.txt
+**/call_transcript*.json
+call_logs/
+transcripts/
+**/call_transcriptions.csv 

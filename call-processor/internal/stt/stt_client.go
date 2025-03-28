@@ -80,7 +80,7 @@ func NewElevenLabsClient(config Config) *ElevenLabsClient {
 
 // Transcribe transcribes audio using ElevenLabs API
 func (c *ElevenLabsClient) Transcribe(ctx context.Context, input *TranscribeInput) (*TranscribeOutput, error) {
-	startTime := time.Now()
+	
 	
 	// Determine file extension based on mime type
 	fileExt := ".mp3" // Default
