@@ -1,4 +1,4 @@
-module github.com/namanag97/call_in_go.git
+module github.com/namanag97/call_in_go/call-processor
 
 go 1.24.1
 

@@ -9,11 +9,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/your-org/call-processing/domain"
-	"github.com/your-org/call-processing/ingestion"
-	"github.com/your-org/call-processing/repository"
-	"github.com/your-org/call-processing/transcription"
-	"github.com/your-org/call-processing/analysis"
+	"github.com/namanag97/call_in_go/call-processor/domain"
+	"github.com/namanag97/call_in_go/call-processor/ingestion"
+	"github.com/namanag97/call_in_go/call-processor/repository"
+	"github.com/namanag97/call_in_go/call-processor/transcription"
+	"github.com/namanag97/call_in_go/call-processor/analysis"
 )
 
 // ErrorResponse represents an error response

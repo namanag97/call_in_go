@@ -10,12 +10,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/your-org/call-processing/domain"
-	"github.com/your-org/call-processing/event"
-	"github.com/your-org/call-processing/repository"
-	"github.com/your-org/call-processing/stt"
-	"github.com/your-org/call-processing/storage"
-	"github.com/your-org/call-processing/worker"
+	"github.com/namanag97/call_in_go/call-processor/domain"
+	"github.com/namanag97/call_in_go/call-processor/event"
+	"github.com/namanag97/call_in_go/call-processor/repository"
+	"github.com/namanag97/call_in_go/call-processor/stt"
+	"github.com/namanag97/call_in_go/call-processor/storage"
+	"github.com/namanag97/call_in_go/call-processor/worker"
 )
 
 // Service errors

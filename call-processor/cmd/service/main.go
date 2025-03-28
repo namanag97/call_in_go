@@ -12,15 +12,15 @@ import (
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/joho/godotenv"
 	
-	"github.com/namanag97/call_in_go/api"
-	"github.com/namanag97/call_in_go/analysis"
-	"github.com/namanag97/call_in_go/event"
-	"github.com/namanag97/call_in_go/ingestion"
-	"github.com/namanag97/call_in_go/repository"
-	"github.com/namanag97/call_in_go/storage"
-	"github.com/namanag97/call_in_go/stt"
-	"github.com/namanag97/call_in_go/transcription"
-	"github.com/namanag97/call_in_go/worker"
+	"github.com/namanag97/call_in_go/call-processor/internalapi"
+	"github.com/namanag97/call_in_go/call-processor/internalanalysis"
+	"github.com/namanag97/call_in_go/call-processor/internalevent"
+	"github.com/namanag97/call_in_go/call-processor/internalingestion"
+	"github.com/namanag97/call_in_go/call-processor/internalrepository"
+	"github.com/namanag97/call_in_go/call-processor/internalstorage"
+	"github.com/namanag97/call_in_go/call-processor/internalstt"
+	"github.com/namanag97/call_in_go/call-processor/internaltranscription"
+	"github.com/namanag97/call_in_go/call-processor/internalworker"
 )
 
 func main() {
