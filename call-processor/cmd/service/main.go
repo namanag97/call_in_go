@@ -13,14 +13,14 @@ import (
 	"github.com/joho/godotenv"
 	
 	"github.com/namanag97/call_in_go/call-processor/internalapi"
-	"github.com/namanag97/call_in_go/call-processor/internalanalysis"
-	"github.com/namanag97/call_in_go/call-processor/internalevent"
-	"github.com/namanag97/call_in_go/call-processor/internalingestion"
-	"github.com/namanag97/call_in_go/call-processor/internalrepository"
-	"github.com/namanag97/call_in_go/call-processor/internalstorage"
+	"github.com/namanag97/call_in_go/call-processor/internal/analysis"
+	"github.com/namanag97/call_in_go/call-processor/internal/event"
+	"github.com/namanag97/call_in_go/call-processor/internal/ingestion"
+	"github.com/namanag97/call_in_go/call-processor/internal/repository"
+	"github.com/namanag97/call_in_go/call-processor/internal/storage"
 	"github.com/namanag97/call_in_go/call-processor/internalstt"
-	"github.com/namanag97/call_in_go/call-processor/internaltranscription"
-	"github.com/namanag97/call_in_go/call-processor/internalworker"
+	"github.com/namanag97/call_in_go/call-processor/internal/transcription"
+	"github.com/namanag97/call_in_go/call-processor/internal/worker"
 )
 
 func main() {
