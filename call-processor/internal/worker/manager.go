@@ -2,362 +2,517 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"runtime"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/namanag97/call_in_go/call-processor/internal/domain"
+	"github.com/namanag97/call_in_go/call-processor/internal/event"
 	"github.com/namanag97/call_in_go/call-processor/internal/repository"
+	"github.com/namanag97/call_in_go/call-processor/internal/worker"
 )
 
-// Enhanced worker system to improve reliability and monitoring
+// Service errors
+var (
+	ErrAnalysisNotFound  = domain.ErrNotFound
+	ErrInvalidInput      = domain.ErrInvalidInput
+	ErrProcessingFailed  = domain.ErrProcessingFailed
+	ErrUnsupportedType   = errors.New("unsupported analysis type")
+	ErrNoTranscription   = errors.New("no transcription available")
+)
 
-// WorkerStats represents statistics about worker operations
-type WorkerStats struct {
-	ActiveWorkers    int                     `json:"activeWorkers"`
-	QueuedJobs       int                     `json:"queuedJobs"`
-	ProcessingJobs   int                     `json:"processingJobs"`
-	CompletedJobs    int                     `json:"completedJobs"`
-	FailedJobs       int                     `json:"failedJobs"`
-	RetryingJobs     int                     `json:"retryingJobs"`
-	JobsByType       map[string]int          `json:"jobsByType"`
-	AverageJobTime   map[string]time.Duration `json:"averageJobTime"`
-	WorkerUtilization float64                `json:"workerUtilization"`
-	StartedAt        time.Time               `json:"startedAt"`
-	LastStatsRefresh time.Time               `json:"lastStatsRefresh"`
+// AnalysisType represents the type of analysis to perform
+type AnalysisType string
+
+const (
+	// AnalysisTypeSentiment represents sentiment analysis
+	AnalysisTypeSentiment AnalysisType = "sentiment"
+	// AnalysisTypeEntities represents entity extraction
+	AnalysisTypeEntities AnalysisType = "entities"
+	// AnalysisTypeTopics represents topic modeling
+	AnalysisTypeTopics AnalysisType = "topics"
+	// AnalysisTypeKeywords represents keyword extraction
+	AnalysisTypeKeywords AnalysisType = "keywords"
+	// AnalysisTypeIntents represents intent detection
+	AnalysisTypeIntents AnalysisType = "intents"
+	// AnalysisTypeSummary represents text summarization
+	AnalysisTypeSummary AnalysisType = "summary"
+)
+
+// Config contains configuration for the analysis service
+type Config struct {
+	MaxConcurrentJobs int
+	JobMaxRetries     int
+	PollInterval      time.Duration
 }
 
-// EnhancedWorkerManager extends the WorkerManager with additional features
-type EnhancedWorkerManager struct {
-	*WorkerManager
-	stats            WorkerStats
-	healthCheckFn    HealthCheckFunc
-	statsRefreshChan chan struct{}
-	processingTimers map[uuid.UUID]time.Time
-	jobHistory       map[string][]time.Duration
-	statsMu          sync.RWMutex
+// Service provides operations for analyzing transcriptions
+type Service struct {
+	config                 Config
+	recordingRepository    repository.RecordingRepository
+	transcriptionRepository repository.TranscriptionRepository
+	analysisRepository     repository.AnalysisRepository
+	eventPublisher         event.Publisher
+	workerManager          worker.Manager
+	processors             map[AnalysisType]Processor
+	mu                     sync.Mutex
 }
 
-// HealthCheckFunc defines a function that checks worker manager health
-type HealthCheckFunc func() (bool, error)
-
-// Config options specific to the enhanced worker manager
-type EnhancedConfig struct {
-	StatsRefreshInterval time.Duration
-	JobHistorySize       int
-	HealthCheckInterval  time.Duration
-	EnableRetryBackoff   bool
-	MaxBackoffDelay      time.Duration
+// Processor defines the interface for analysis processors
+type Processor interface {
+	Process(ctx context.Context, transcription *domain.Transcription) (json.RawMessage, error)
+	Type() AnalysisType
 }
 
-// NewEnhancedWorkerManager creates a new enhanced worker manager
-func NewEnhancedWorkerManager(
+// NewService creates a new analysis service
+func NewService(
 	config Config,
-	jobRepo repository.JobRepository,
-	enhancedConfig EnhancedConfig,
-) *EnhancedWorkerManager {
-	baseManager := NewWorkerManager(config, jobRepo)
-	
-	if enhancedConfig.StatsRefreshInterval == 0 {
-		enhancedConfig.StatsRefreshInterval = 30 * time.Second
+	recordingRepository repository.RecordingRepository,
+	transcriptionRepository repository.TranscriptionRepository,
+	analysisRepository repository.AnalysisRepository,
+	eventPublisher event.Publisher,
+	workerManager worker.Manager,
+) *Service {
+	s := &Service{
+		config:                 config,
+		recordingRepository:    recordingRepository,
+		transcriptionRepository: transcriptionRepository,
+		analysisRepository:     analysisRepository,
+		eventPublisher:         eventPublisher,
+		workerManager:          workerManager,
+		processors:             make(map[AnalysisType]Processor),
 	}
-	
-	if enhancedConfig.JobHistorySize == 0 {
-		enhancedConfig.JobHistorySize = 100
-	}
-	
-	manager := &EnhancedWorkerManager{
-		WorkerManager:    baseManager,
-		statsRefreshChan: make(chan struct{}),
-		processingTimers: make(map[uuid.UUID]time.Time),
-		jobHistory:       make(map[string][]time.Duration),
-		stats: WorkerStats{
-			JobsByType:     make(map[string]int),
-			AverageJobTime: make(map[string]time.Duration),
-			StartedAt:      time.Now(),
-		},
-		healthCheckFn: defaultHealthCheck,
-	}
-	
-	// Override the job processing function to collect metrics
-	originalProcessJob := baseManager.processJob
-	baseManager.processJob = func(job *domain.Job) {
-		manager.trackJobStart(job)
-		originalProcessJob(job)
-		manager.trackJobEnd(job)
-	}
-	
-	return manager
+
+	// Register worker handlers
+	s.workerManager.RegisterHandler("analysis", s.processAnalysisJob)
+
+	return s
 }
 
-// Start starts the worker manager with enhanced features
-func (m *EnhancedWorkerManager) Start() error {
-	// Refresh stats initially
-	m.refreshStats()
-	
-	// Start stats collector goroutine
-	go m.statsCollector()
-	
-	// Start health check goroutine if interval > 0
-	if m.config.HealthCheckInterval > 0 {
-		go m.healthChecker()
+// RegisterProcessor registers an analysis processor
+func (s *Service) RegisterProcessor(processor Processor) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.processors[processor.Type()] = processor
+}
+
+// AnalysisRequest represents a request to analyze a transcription
+type AnalysisRequest struct {
+	RecordingID  uuid.UUID
+	AnalysisType AnalysisType
+	UserID       uuid.UUID
+	Priority     int
+	Config       map[string]interface{}
+}
+
+// AnalysisResponse represents the response from an analysis request
+type AnalysisResponse struct {
+	AnalysisID   uuid.UUID          `json:"analysisId"`
+	RecordingID  uuid.UUID          `json:"recordingId"`
+	AnalysisType string             `json:"analysisType"`
+	Status       domain.AnalysisStatus `json:"status"`
+	JobID        uuid.UUID          `json:"jobId"`
+}
+
+// StartAnalysis begins the analysis process for a transcription
+func (s *Service) StartAnalysis(ctx context.Context, req AnalysisRequest) (*AnalysisResponse, error) {
+	// Validate input
+	if req.RecordingID == uuid.Nil {
+		return nil, ErrInvalidInput
 	}
-	
-	// Start the base worker manager
-	return m.WorkerManager.Start()
-}
 
-// Stop stops the enhanced worker manager
-func (m *EnhancedWorkerManager) Stop() error {
-	// Signal stats collector to stop
-	close(m.statsRefreshChan)
-	
-	// Stop the base worker manager
-	return m.WorkerManager.Stop()
-}
-
-// GetStats returns the current worker stats
-func (m *EnhancedWorkerManager) GetStats() WorkerStats {
-	m.statsMu.RLock()
-	defer m.statsMu.RUnlock()
-	
-	// Return a copy to avoid race conditions
-	statsCopy := m.stats
-	statsCopy.JobsByType = make(map[string]int)
-	statsCopy.AverageJobTime = make(map[string]time.Duration)
-	
-	for k, v := range m.stats.JobsByType {
-		statsCopy.JobsByType[k] = v
+	if req.AnalysisType == "" {
+		return nil, ErrInvalidInput
 	}
-	
-	for k, v := range m.stats.AverageJobTime {
-		statsCopy.AverageJobTime[k] = v
-	}
-	
-	return statsCopy
-}
 
-// CheckHealth performs a health check on the worker manager
-func (m *EnhancedWorkerManager) CheckHealth() (bool, error) {
-	if m.healthCheckFn == nil {
-		return true, nil
-	}
-	return m.healthCheckFn()
-}
-
-// SetHealthCheckFunc sets a custom health check function
-func (m *EnhancedWorkerManager) SetHealthCheckFunc(fn HealthCheckFunc) {
-	m.healthCheckFn = fn
-}
-
-// trackJobStart tracks when a job starts processing
-func (m *EnhancedWorkerManager) trackJobStart(job *domain.Job) {
-	m.statsMu.Lock()
-	defer m.statsMu.Unlock()
-	
-	m.processingTimers[job.ID] = time.Now()
-	m.stats.ProcessingJobs++
-}
-
-// trackJobEnd tracks when a job finishes processing
-func (m *EnhancedWorkerManager) trackJobEnd(job *domain.Job) {
-	m.statsMu.Lock()
-	defer m.statsMu.Unlock()
-	
-	startTime, exists := m.processingTimers[job.ID]
+	// Check if processor exists
+	s.mu.Lock()
+	_, exists := s.processors[req.AnalysisType]
+	s.mu.Unlock()
 	if !exists {
-		return
+		return nil, ErrUnsupportedType
 	}
-	
-	duration := time.Since(startTime)
-	delete(m.processingTimers, job.ID)
-	
-	// Update job history
-	jobType := job.JobType
-	history := m.jobHistory[jobType]
-	if len(history) >= m.config.JobHistorySize {
-		// Remove oldest entry
-		history = history[1:]
-	}
-	history = append(history, duration)
-	m.jobHistory[jobType] = history
-	
-	// Update average time
-	var total time.Duration
-	for _, d := range history {
-		total += d
-	}
-	m.stats.AverageJobTime[jobType] = total / time.Duration(len(history))
-	
-	// Update job counts based on status
-	m.stats.ProcessingJobs--
-	switch job.Status {
-	case domain.JobStatusCompleted:
-		m.stats.CompletedJobs++
-	case domain.JobStatusFailed:
-		m.stats.FailedJobs++
-	case domain.JobStatusRetrying:
-		m.stats.RetryingJobs++
-	}
-}
 
-// statsCollector periodically refreshes worker stats
-func (m *EnhancedWorkerManager) statsCollector() {
-	ticker := time.NewTicker(m.config.StatsRefreshInterval)
-	defer ticker.Stop()
+	// Check if recording exists
+	recording, err := s.recordingRepository.Get(ctx, req.RecordingID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get recording: %w", err)
+	}
+
+	// Check if transcription exists and is completed
+	transcription, err := s.transcriptionRepository.GetByRecordingID(ctx, req.RecordingID)
+	if err != nil {
+		return nil, ErrNoTranscription
+	}
+
+	if transcription.Status != domain.TranscriptionStatusCompleted {
+		return nil, ErrNoTranscription
+	}
+
+	// Check if analysis already exists
+	existingAnalysis, err := s.analysisRepository.GetByRecordingIDAndType(ctx, req.RecordingID, string(req.AnalysisType))
+	if err == nil {
+		// Analysis already exists
+		return &AnalysisResponse{
+			AnalysisID:   existingAnalysis.ID,
+			RecordingID:  existingAnalysis.RecordingID,
+			AnalysisType: existingAnalysis.AnalysisType,
+			Status:       existingAnalysis.Status,
+		}, nil
+	} else if !errors.Is(err, repository.ErrNotFound) {
+		// Unexpected error
+		return nil, fmt.Errorf("failed to check existing analysis: %w", err)
+	}
+
+	// Create analysis entity
+	analysisID := uuid.New()
 	
-	for {
-		select {
-		case <-m.ctx.Done():
-			return
-		case <-ticker.C:
-			m.refreshStats()
-		case <-m.statsRefreshChan:
-			m.refreshStats()
+	// Marshal config to JSON
+	configJSON := []byte("{}")
+	if req.Config != nil {
+		var err error
+		configJSON, err = json.Marshal(req.Config)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal config: %w", err)
 		}
 	}
-}
-
-// refreshStats refreshes the worker stats
-func (m *EnhancedWorkerManager) refreshStats() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	
-	// Get job counts by status
-	queuedJobs, _ := m.jobRepo.CountByStatus(ctx, domain.JobStatusPending)
-	processingJobs, _ := m.jobRepo.CountByStatus(ctx, domain.JobStatusProcessing)
-	completedJobs, _ := m.jobRepo.CountByStatus(ctx, domain.JobStatusCompleted)
-	failedJobs, _ := m.jobRepo.CountByStatus(ctx, domain.JobStatusFailed)
-	retryingJobs, _ := m.jobRepo.CountByStatus(ctx, domain.JobStatusRetrying)
-	
-	// Get job counts by type
-	jobsByType := make(map[string]int)
-	m.mu.RLock()
-	for jobType := range m.handlers {
-		count, _ := m.jobRepo.CountByType(ctx, jobType)
-		jobsByType[jobType] = count
+	analysis := &domain.Analysis{
+		ID:           analysisID,
+		RecordingID:  req.RecordingID,
+		AnalysisType: string(req.AnalysisType),
+		Status:       domain.AnalysisStatusPending,
+		Results:      nil,
 	}
-	activeWorkers := len(m.workerPool)
-	m.mu.RUnlock()
-	
-	// Calculate worker utilization
-	workerUtilization := float64(activeWorkers) / float64(m.config.WorkerCount)
-	
-	// Update stats
-	m.statsMu.Lock()
-	m.stats.QueuedJobs = queuedJobs
-	m.stats.ProcessingJobs = processingJobs
-	m.stats.CompletedJobs = completedJobs
-	m.stats.FailedJobs = failedJobs
-	m.stats.RetryingJobs = retryingJobs
-	m.stats.JobsByType = jobsByType
-	m.stats.ActiveWorkers = activeWorkers
-	m.stats.WorkerUtilization = workerUtilization
-	m.stats.LastStatsRefresh = time.Now()
-	m.statsMu.Unlock()
+
+	// Save to database
+	err = s.analysisRepository.Create(ctx, analysis)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create analysis: %w", err)
+	}
+
+	// Create job payload
+	jobPayload := map[string]interface{}{
+		"analysisId":   analysisID.String(),
+		"recordingId":  req.RecordingID.String(),
+		"analysisType": string(req.AnalysisType),
+		"config":       req.Config,
+	}
+
+	jobPayloadJSON, err := json.Marshal(jobPayload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal job payload: %w", err)
+	}
+
+	// Create job
+	job := &domain.Job{
+		ID:           uuid.New(),
+		JobType:      "analysis",
+		Status:       domain.JobStatusPending,
+		Priority:     req.Priority,
+		Payload:      jobPayloadJSON,
+		MaxAttempts:  s.config.JobMaxRetries,
+		ScheduledFor: time.Now(),
+	}
+
+	// Enqueue job
+	err = s.workerManager.EnqueueJob(ctx, job)
+				if err != nil {
+		return nil, fmt.Errorf("failed to enqueue job: %w", err)
+	}
+
+	// Publish event
+	event := &domain.Event{
+		ID:         uuid.New(),
+		EventType:  "analysis.started",
+		EntityType: "analysis",
+		EntityID:   analysisID,
+		UserID:     &req.UserID,
+		CreatedAt:  time.Now(),
+		Data:       configJSON,
+	}
+
+	err = s.eventPublisher.Publish(ctx, event)
+	if err != nil {
+		// Log but continue
+		fmt.Printf("Failed to publish start event: %v\n", err)
+	}
+
+	return &AnalysisResponse{
+		AnalysisID:   analysisID,
+		RecordingID:  req.RecordingID,
+		AnalysisType: string(req.AnalysisType),
+		Status:       domain.AnalysisStatusPending,
+		JobID:        job.ID,
+	}, nil
 }
 
-// healthChecker periodically checks worker manager health
-func (m *EnhancedWorkerManager) healthChecker() {
-	ticker := time.NewTicker(m.config.HealthCheckInterval)
-	defer ticker.Stop()
+// GetAnalysis retrieves an analysis by ID
+func (s *Service) GetAnalysis(ctx context.Context, id uuid.UUID) (*domain.Analysis, error) {
+	return s.analysisRepository.Get(ctx, id)
+}
+
+// GetAnalysisByRecordingIDAndType retrieves an analysis by recording ID and type
+func (s *Service) GetAnalysisByRecordingIDAndType(ctx context.Context, recordingID uuid.UUID, analysisType string) (*domain.Analysis, error) {
+	return s.analysisRepository.GetByRecordingIDAndType(ctx, recordingID, analysisType)
+}
+
+// ListAnalysesByRecordingID lists all analyses for a recording
+func (s *Service) ListAnalysesByRecordingID(ctx context.Context, recordingID uuid.UUID) ([]*domain.Analysis, error) {
+	return s.analysisRepository.ListByRecordingID(ctx, recordingID)
+}
+
+// processAnalysisJob processes an analysis job
+func (s *Service) processAnalysisJob(ctx context.Context, job *domain.Job) error {
+	// Parse job payload
+	var payload struct {
+		AnalysisID   string                 `json:"analysisId"`
+		RecordingID  string                 `json:"recordingId"`
+		AnalysisType string                 `json:"analysisType"`
+		Config       map[string]interface{} `json:"config"`
+	}
+
+	err := json.Unmarshal(job.Payload, &payload)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal job payload: %w", err)
+	}
+
+	analysisID, err := uuid.Parse(payload.AnalysisID)
+	if err != nil {
+		return fmt.Errorf("invalid analysis ID: %w", err)
+	}
+
+	recordingID, err := uuid.Parse(payload.RecordingID)
+	if err != nil {
+		return fmt.Errorf("invalid recording ID: %w", err)
+	}
+
+	// Update analysis status to processing
+	analysis, err := s.analysisRepository.Get(ctx, analysisID)
+	if err != nil {
+		return fmt.Errorf("failed to get analysis: %w", err)
+	}
+
+	startedAt := time.Now()
+	analysis.Status = domain.AnalysisStatusProcessing
+	analysis.StartedAt = &startedAt
+
+	err = s.analysisRepository.Update(ctx, analysis)
+	if err != nil {
+		return fmt.Errorf("failed to update analysis status: %w", err)
+	}
+
+	// Get transcription
+	transcription, err := s.transcriptionRepository.GetByRecordingID(ctx, recordingID)
+	if err != nil {
+		analysis.Status = domain.AnalysisStatusError
+		analysis.Error = "Transcription not found"
+		s.analysisRepository.Update(ctx, analysis)
+		return fmt.Errorf("failed to get transcription: %w", err)
+	}
+
+	// Load segments if available
+	segments, err := s.transcriptionRepository.GetSegments(ctx, transcription.ID)
+	if err == nil {
+		transcription.Segments = segments
+	}
+
+	// Get processor
+	s.mu.Lock()
+	processor, exists := s.processors[AnalysisType(payload.AnalysisType)]
+	s.mu.Unlock()
+	if !exists {
+		analysis.Status = domain.AnalysisStatusError
+		analysis.Error = "Processor not found"
+		s.analysisRepository.Update(ctx, analysis)
+		return ErrUnsupportedType
+	}
+
+	// Process the transcription
+	results, err := processor.Process(ctx, transcription)
+	if err != nil {
+		analysis.Status = domain.AnalysisStatusError
+		analysis.Error = err.Error()
+		s.analysisRepository.Update(ctx, analysis)
+		return fmt.Errorf("processing failed: %w", err)
+	}
+
+	// Update analysis with results
+	completedAt := time.Now()
+	analysis.Status = domain.AnalysisStatusCompleted
+	analysis.Results = results
+	analysis.CompletedAt = &completedAt
+
+	err = s.analysisRepository.Update(ctx, analysis)
+	if err != nil {
+		return fmt.Errorf("failed to update analysis with results: %w", err)
+	}
+
+	// Publish completion event
+	resultData := map[string]interface{}{
+		"analysisId":   analysisID.String(),
+		"recordingId":  recordingID.String(),
+		"analysisType": payload.AnalysisType,
+		"duration":     completedAt.Sub(startedAt).Seconds(),
+	}
+
+	resultDataJSON, err := json.Marshal(resultData)
+	if err != nil {
+		fmt.Printf("Failed to marshal event data: %v\n", err)
+		resultDataJSON = []byte("{}")
+	}
+
+	event := &domain.Event{
+		ID:         uuid.New(),
+		EventType:  "analysis.completed",
+		EntityType: "analysis",
+		EntityID:   analysisID,
+		CreatedAt:  time.Now(),
+		Data:       resultDataJSON,
+	}
 	
-	for {
-		select {
-		case <-m.ctx.Done():
-			return
-		case <-ticker.C:
-			healthy, err := m.CheckHealth()
-			if !healthy {
-				fmt.Printf("Worker manager health check failed: %v\n", err)
-				// In a real system, this would report to monitoring
+	err = s.eventPublisher.Publish(ctx, event)
+	if err != nil {
+		// Log but continue
+		fmt.Printf("Failed to publish completion event: %v\n", err)
+	}
+	
+	return nil
+}
+
+// Example of a processor implementation - SentimentProcessor
+type SentimentProcessor struct {
+	// Dependencies would go here, such as NLP client, etc.
+}
+
+// NewSentimentProcessor creates a new sentiment processor
+func NewSentimentProcessor() *SentimentProcessor {
+	return &SentimentProcessor{}
+}
+
+// Type returns the processor type
+func (p *SentimentProcessor) Type() AnalysisType {
+	return AnalysisTypeSentiment
+}
+
+// Process analyzes the sentiment of a transcription
+func (p *SentimentProcessor) Process(ctx context.Context, transcription *domain.Transcription) (json.RawMessage, error) {
+	// This is a simplified implementation - in a real system, this would use an NLP service
+	
+	// Example result structure
+	result := struct {
+		OverallSentiment float64 `json:"overallSentiment"`
+		PositiveSegments int     `json:"positiveSegments"`
+		NeutralSegments  int     `json:"neutralSegments"`
+		NegativeSegments int     `json:"negativeSegments"`
+		SegmentSentiments []struct {
+			SegmentID  string  `json:"segmentId"`
+			StartTime  float64 `json:"startTime"`
+			EndTime    float64 `json:"endTime"`
+			Text       string  `json:"text"`
+			Sentiment  float64 `json:"sentiment"`
+			Confidence float64 `json:"confidence"`
+		} `json:"segmentSentiments"`
+	}{
+		OverallSentiment: 0.0,
+		PositiveSegments: 0,
+		NeutralSegments:  0,
+		NegativeSegments: 0,
+		SegmentSentiments: []struct {
+			SegmentID  string  `json:"segmentId"`
+			StartTime  float64 `json:"startTime"`
+			EndTime    float64 `json:"endTime"`
+			Text       string  `json:"text"`
+			Sentiment  float64 `json:"sentiment"`
+			Confidence float64 `json:"confidence"`
+		}{},
+	}
+
+	// Process each segment for sentiment
+	var totalSentiment float64
+	for _, segment := range transcription.Segments {
+		// This would call an NLP service for real sentiment analysis
+		// Here we're just using a placeholder algorithm
+		sentiment := calculateDummySentiment(segment.Text)
+		
+		segmentResult := struct {
+			SegmentID  string  `json:"segmentId"`
+			StartTime  float64 `json:"startTime"`
+			EndTime    float64 `json:"endTime"`
+			Text       string  `json:"text"`
+			Sentiment  float64 `json:"sentiment"`
+			Confidence float64 `json:"confidence"`
+		}{
+			SegmentID:  segment.ID.String(),
+			StartTime:  segment.StartTime,
+			EndTime:    segment.EndTime,
+			Text:       segment.Text,
+			Sentiment:  sentiment,
+			Confidence: 0.8, // Placeholder
+		}
+		
+		result.SegmentSentiments = append(result.SegmentSentiments, segmentResult)
+		totalSentiment += sentiment
+		
+		// Categorize sentiment
+		if sentiment > 0.2 {
+			result.PositiveSegments++
+		} else if sentiment < -0.2 {
+			result.NegativeSegments++
+		} else {
+			result.NeutralSegments++
+		}
+	}
+	
+	// Calculate overall sentiment
+	if len(transcription.Segments) > 0 {
+		result.OverallSentiment = totalSentiment / float64(len(transcription.Segments))
+	}
+
+	// Serialize to JSON
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+
+	return resultJSON, nil
+}
+
+// calculateDummySentiment calculates a dummy sentiment score for demo purposes
+// In a real system, this would use a proper NLP service
+func calculateDummySentiment(text string) float64 {
+	// This is a very naive implementation - just for demonstration
+	// Positive words increase score, negative words decrease it
+	positiveWords := []string{"good", "great", "excellent", "happy", "pleased", "satisfied", "thanks", "thank"}
+	negativeWords := []string{"bad", "poor", "terrible", "unhappy", "disappointed", "problem", "issue", "sorry"}
+	
+	words := strings.Fields(strings.ToLower(text))
+	var score float64
+	
+	for _, word := range words {
+		for _, positive := range positiveWords {
+			if word == positive {
+				score += 0.1
+			}
+		}
+		for _, negative := range negativeWords {
+			if word == negative {
+				score -= 0.1
 			}
 		}
 	}
-}
-
-// defaultHealthCheck performs a basic health check
-func defaultHealthCheck() (bool, error) {
-	// Check system resources
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
 	
-	// Example: Check if we're using too much memory
-	if m.Sys > 1024*1024*1024 { // 1GB
-		return false, errors.New("worker using too much memory")
+	// Normalize to range [-1, 1]
+	if score > 1.0 {
+		score = 1.0
+	} else if score < -1.0 {
+		score = -1.0
 	}
 	
-	// Check if we can access the job repository
-	// This would be implemented in a real system
-	
-	return true, nil
+	return score
 }
 
-// Enhanced JobRepository interface
-type EnhancedJobRepository interface {
-	repository.JobRepository
-	CountByType(ctx context.Context, jobType string) (int, error)
-	GetJobMetrics(ctx context.Context, since time.Time) (map[string]int, error)
-	ClearStuckJobs(ctx context.Context, olderThan time.Duration) (int, error)
-}
-
-// Implementation for the CountByType method in PostgresJobRepository
-func (r *PostgresJobRepository) CountByType(ctx context.Context, jobType string) (int, error) {
-	var count int
-	err := r.db.QueryRow(ctx, "SELECT COUNT(*) FROM jobs WHERE job_type = $1", jobType).Scan(&count)
-	return count, err
-}
-
-// Implementation for the GetJobMetrics method in PostgresJobRepository
-func (r *PostgresJobRepository) GetJobMetrics(ctx context.Context, since time.Time) (map[string]int, error) {
-	query := `
-		SELECT status, COUNT(*) 
-		FROM jobs 
-		WHERE created_at >= $1 
-		GROUP BY status
-	`
-	
-	rows, err := r.db.Query(ctx, query, since)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	
-	metrics := make(map[string]int)
-	for rows.Next() {
-		var status string
-		var count int
-		if err := rows.Scan(&status, &count); err != nil {
-			return nil, err
-		}
-		metrics[status] = count
-	}
-	
-	return metrics, rows.Err()
-}
-
-// Implementation for the ClearStuckJobs method in PostgresJobRepository
-func (r *PostgresJobRepository) ClearStuckJobs(ctx context.Context, olderThan time.Duration) (int, error) {
-	cutoffTime := time.Now().Add(-olderThan)
-	
-	query := `
-		UPDATE jobs 
-		SET status = $1, 
-			last_error = 'Job was stuck in processing state', 
-			updated_at = NOW() 
-		WHERE status = $2 
-		AND locked_at < $3
-	`
-	
-	result, err := r.db.Exec(ctx, query, domain.JobStatusFailed, domain.JobStatusProcessing, cutoffTime)
-	if err != nil {
-		return 0, err
-	}
-	
-	count := int(result.RowsAffected())
-	return count, nil
-}

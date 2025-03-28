@@ -980,104 +980,48 @@ func (c *JobController) RegisterRoutes(router *gin.RouterGroup) {
 	jobs := router.Group("/jobs")
 	{
 		jobs.GET("/:id", c.GetJob)
-		jobs.GET("/stats", c.GetWorkerStats)       // Add this line
-		jobs.GET("/health", c.CheckWorkerHealth)   // Add this line
-		jobs.POST("/maintenance/clear-stuck", c.ClearStuckJobs) // Add this line
+		jobs.GET("/stats", c.GetWorkerStats)
+		jobs.GET("/health", c.GetWorkerHealth)
+		jobs.POST("/maintenance/clear-stuck", c.ClearStuckJobs)
 	}
 }
+
+// GetWorkerStats returns worker statistics
 func (c *JobController) GetWorkerStats(ctx *gin.Context) {
-	// Check if the worker manager supports stats
-	enhancedManager, ok := c.workerManager.(*worker.EnhancedWorkerManager)
-	if !ok {
-		ctx.JSON(http.StatusOK, SuccessResponse{
-			Success: true,
-			Data: map[string]interface{}{
-				"enhanced": false,
-				"message": "Worker statistics are only available with the enhanced worker manager",
-			},
-		})
-		return
-	}
-	// Get stats from enhanced manager
-	stats := enhancedManager.GetStats()
-	
-	ctx.JSON(http.StatusOK, SuccessResponse{
-		Success: true,
-		Data:    stats,
+	ctx.JSON(http.StatusOK, gin.H{
+		"status":    "ok",
+		"message":   "Worker statistics endpoint removed for MVP",
 	})
 }
 
-func (c *JobController) CheckWorkerHealth(ctx *gin.Context) {
-	// Check if the worker manager supports health checks
-	enhancedManager, ok := c.workerManager.(*worker.EnhancedWorkerManager)
-	if !ok {
-		ctx.JSON(http.StatusOK, SuccessResponse{
-			Success: true,
-			Data: map[string]interface{}{
-				"healthy": true,
-				"message": "Basic worker manager is running",
-			},
-		})
-		return
-	}
-	
-	// Get health status from enhanced manager
-	healthy, err := enhancedManager.CheckHealth()
-	
-	if !healthy {
-		ctx.JSON(http.StatusServiceUnavailable, ErrorResponse{
-			Error:   "worker_unhealthy",
-			Message: err.Error(),
-		})
-		return
-	}
-	
-	ctx.JSON(http.StatusOK, SuccessResponse{
-		Success: true,
-		Data: map[string]interface{}{
-			"healthy": true,
-		},
+// GetWorkerHealth returns worker health status
+func (c *JobController) GetWorkerHealth(ctx *gin.Context) {
+	ctx.JSON(http.StatusOK, gin.H{
+		"status":    "ok",
+		"message":   "Worker health endpoint removed for MVP",
 	})
 }
 
+// ClearStuckJobs clears jobs that have been stuck for too long
 func (c *JobController) ClearStuckJobs(ctx *gin.Context) {
-	// Parse duration parameter
-	durationStr := ctx.DefaultQuery("olderThan", "1h")
-	duration, err := time.ParseDuration(durationStr)
+	duration, err := time.ParseDuration(ctx.DefaultQuery("duration", "1h"))
 	if err != nil {
-		ctx.JSON(http.StatusBadRequest, ErrorResponse{
-			Error:   "invalid_duration",
-			Message: "Invalid duration format",
+		ctx.JSON(http.StatusBadRequest, gin.H{
+			"error": "Invalid duration format",
 		})
 		return
 	}
-	
-	// Cast job repository to enhanced repository
-	enhancedRepo, ok := c.workerManager.(*worker.EnhancedWorkerManager).WorkerManager.JobRepo.(worker.EnhancedJobRepository)
-	if !ok {
-		ctx.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "unsupported_operation",
-			Message: "Job repository does not support clearing stuck jobs",
-		})
-		return
-	}
-	
-	// Clear stuck jobs
-	count, err := enhancedRepo.ClearStuckJobs(ctx, duration)
+
+	count, err := c.workerManager.ClearStuckJobs(ctx, duration)
 	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error:   "operation_failed",
-			Message: err.Error(),
+		ctx.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
 		})
 		return
 	}
-	
-	ctx.JSON(http.StatusOK, SuccessResponse{
-		Success: true,
-		Data: map[string]interface{}{
-			"clearedCount": count,
-			"olderThan":    durationStr,
-		},
+
+	ctx.JSON(http.StatusOK, gin.H{
+		"cleared": count,
 	})
 }
 

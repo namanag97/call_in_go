@@ -243,37 +243,10 @@ func initEventSystem(eventRepo repository.EventRepository) (event.EventBus, erro
 	return event.NewInMemoryEventBus(), nil
 }
 
-// Worker manager initialization
-func initWorkerManager(jobRepo repository.JobRepository) worker.Manager {
-	config := worker.Config{
-		WorkerCount:     getEnvInt("WORKER_COUNT", 5),
-		PollingInterval: time.Duration(getEnvInt("WORKER_POLLING_INTERVAL_MS", 5000)) * time.Millisecond,
-		LockDuration:    time.Duration(getEnvInt("WORKER_LOCK_DURATION_SEC", 900)) * time.Second,
-		MaxRetries:      getEnvInt("WORKER_MAX_RETRIES", 3),
-		RetryDelay:      time.Duration(getEnvInt("WORKER_RETRY_DELAY_SEC", 30)) * time.Second,
-		JobTimeout:      time.Duration(getEnvInt("WORKER_JOB_TIMEOUT_SEC", 600)) * time.Second,
-		ShutdownTimeout: time.Duration(getEnvInt("WORKER_SHUTDOWN_TIMEOUT_SEC", 30)) * time.Second,
-	}
-	
-	// Check if enhanced worker manager is enabled
-	if getEnvBool("ENABLE_ENHANCED_WORKER", true) {
-		enhancedConfig := worker.EnhancedConfig{
-			StatsRefreshInterval: time.Duration(getEnvInt("WORKER_STATS_REFRESH_SEC", 30)) * time.Second,
-			JobHistorySize:       getEnvInt("WORKER_JOB_HISTORY_SIZE", 100),
-			HealthCheckInterval:  time.Duration(getEnvInt("WORKER_HEALTH_CHECK_SEC", 60)) * time.Second,
-			EnableRetryBackoff:   getEnvBool("WORKER_ENABLE_RETRY_BACKOFF", true),
-			MaxBackoffDelay:      time.Duration(getEnvInt("WORKER_MAX_BACKOFF_SEC", 3600)) * time.Second,
-		}
-		
-		return worker.NewEnhancedWorkerManager(config, jobRepo, enhancedConfig)
-	}
-	
-	// Use standard worker manager
-	return worker.NewWorkerManager(config, jobRepo)
+// Initialize worker manager
+func initWorkerManager(config worker.Config, jobRepo repository.JobRepository) worker.Manager {
+    return worker.NewWorkerManager(config, jobRepo)
 }
-
-// Add a new endpoint to the JobController to expose worker stats
-
 
 // STT client initialization
 func initSTTClient() stt.Client {
