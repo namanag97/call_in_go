@@ -12,13 +12,12 @@ import (
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/joho/godotenv"
 	
-	"github.com/namanag97/call_in_go/call-processor/internalapi"
+	"github.com/namanag97/call_in_go/call-processor/internal/api"
 	"github.com/namanag97/call_in_go/call-processor/internal/analysis"
 	"github.com/namanag97/call_in_go/call-processor/internal/event"
 	"github.com/namanag97/call_in_go/call-processor/internal/ingestion"
 	"github.com/namanag97/call_in_go/call-processor/internal/repository"
 	"github.com/namanag97/call_in_go/call-processor/internal/storage"
-	"github.com/namanag97/call_in_go/call-processor/internalstt"
 	"github.com/namanag97/call_in_go/call-processor/internal/transcription"
 	"github.com/namanag97/call_in_go/call-processor/internal/worker"
 )
