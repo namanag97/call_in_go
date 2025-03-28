@@ -254,3 +254,11 @@ type AnalysisFilter struct {
 	From         *time.Time       `json:"from,omitempty"`
 	To           *time.Time       `json:"to,omitempty"`
 }
+
+// StorageObject represents a storage object (file) in the system
+type StorageObject struct {
+	Key          string    `json:"key"`
+	Size         int64     `json:"size"`
+	LastModified time.Time `json:"lastModified"`
+	ETag         string    `json:"etag"`
+}

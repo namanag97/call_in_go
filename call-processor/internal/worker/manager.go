@@ -22,6 +22,8 @@ type Manager interface {
 	RegisterHandler(jobType string, handler JobHandler)
 	EnqueueJob(ctx context.Context, job *domain.Job) error
 	GetJobStatus(ctx context.Context, jobID uuid.UUID) (*domain.Job, error)
+}
+
 // RegisterHandler registers a handler for a job type
 func (m *WorkerManager) RegisterHandler(jobType string, handler JobHandler) {
 	m.mutex.Lock()

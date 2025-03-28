@@ -229,64 +229,72 @@ func (c *GoogleSpeechClient) Transcribe(ctx context.Context, input *TranscribeIn
 
 	var fullText strings.Builder
 	var wordCount int
-	var totalConfidence float64
+	var confidence float64
+	var segments []Segment
 
-	if len(response.Results) > 0 && len(response.Results[0].Alternatives) > 0 {
-		bestAlternative := response.Results[0].Alternatives[0]
-		
-		// Build full text and calculate confidence
-		fullText.WriteString(bestAlternative.Transcript)
-		output.Confidence = bestAlternative.Confidence
-		
-		// Process words and build segments
-		var currentSegment Segment
-		var wordBuffer strings.Builder
-		
-		for i, word := range bestAlternative.Words {
-			wordCount++
-			
-			// Convert time to seconds
-			startTime := float64(word.StartTime.Seconds) + float64(word.StartTime.Nanos)/1e9
-			endTime := float64(word.EndTime.Seconds) + float64(word.EndTime.Nanos)/1e9
-			
-			// First word or new speaker
-			if i == 0 || word.Speaker != currentSegment.Speaker {
-				// Save previous segment if it exists
-				if i > 0 {
-					currentSegment.Text = wordBuffer.String()
-					output.Segments = append(output.Segments, currentSegment)
-					wordBuffer.Reset()
-				}
-				
-				// Start new segment
-				currentSegment = Segment{
-					StartTime: startTime,
-					EndTime:   endTime,
-					Speaker:   word.Speaker,
-					Confidence: bestAlternative.Confidence, // Use overall confidence as default
-				}
-				
-				wordBuffer.WriteString(word.Word)
-			} else {
-				// Continue current segment
-				currentSegment.EndTime = endTime
-				wordBuffer.WriteString(" " + word.Word)
+	for _, result := range response.Results {
+		for _, alt := range result.Alternatives {
+			if alt.Transcript != "" {
+				fullText.WriteString(alt.Transcript)
+				confidence = alt.Confidence
+				break
 			}
-			
-			// Last word
-			if i == len(bestAlternative.Words)-1 {
+		}
+		if fullText.Len() > 0 {
+			break
+		}
+	}
+
+	// Process words and build segments
+	var currentSegment Segment
+	var wordBuffer strings.Builder
+
+	for i, word := range response.Results[0].Alternatives[0].Words {
+		wordCount++
+		
+		// Convert time to seconds
+		startTime := float64(word.StartTime.Seconds) + float64(word.StartTime.Nanos)/1e9
+		endTime := float64(word.EndTime.Seconds) + float64(word.EndTime.Nanos)/1e9
+		
+		// First word or new speaker
+		if i == 0 || word.Speaker != currentSegment.Speaker {
+			// Save previous segment if it exists
+			if i > 0 {
 				currentSegment.Text = wordBuffer.String()
-				output.Segments = append(output.Segments, currentSegment)
+				segments = append(segments, currentSegment)
+				wordBuffer.Reset()
 			}
+			
+			// Start new segment
+			currentSegment = Segment{
+				StartTime: startTime,
+				EndTime:   endTime,
+				Speaker:   word.Speaker,
+				Confidence: confidence, // Use overall confidence as default
+			}
+			
+			wordBuffer.WriteString(word.Word)
+		} else {
+			// Continue current segment
+			currentSegment.EndTime = endTime
+			wordBuffer.WriteString(" " + word.Word)
+		}
+		
+		// Last word
+		if i == len(response.Results[0].Alternatives[0].Words)-1 {
+			currentSegment.Text = wordBuffer.String()
+			segments = append(segments, currentSegment)
 		}
 	}
 
 	output.Text = fullText.String()
 	output.WordCount = wordCount
+	output.Confidence = confidence
+	output.Segments = segments
 	
 	// If no segments were created but we have text, create a single segment
-	if len(output.Segments) == 0 && output.Text != "" {
-		output.Segments = append(output.Segments, Segment{
+	if len(segments) == 0 && output.Text != "" {
+		segments = append(segments, Segment{
 			StartTime:  0,
 			EndTime:    0, // We don't know the duration
 			Text:       output.Text,

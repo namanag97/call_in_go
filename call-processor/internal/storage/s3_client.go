@@ -10,7 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/namanag97/call_in_go/call-processor/internal/domain"
 )
 
 // Client interface for storage operations
@@ -196,18 +196,10 @@ type ListObjectsInput struct {
 
 // ListObjectsOutput represents the output from listing objects
 type ListObjectsOutput struct {
-	Contents       []ObjectInfo
+	Contents       []domain.StorageObject
 	CommonPrefixes []string
 	IsTruncated    bool
 	NextContinuationToken string
-}
-
-// ObjectInfo represents information about an object
-type ObjectInfo struct {
-	Key          string
-	Size         int64
-	LastModified time.Time
-	ETag         string
 }
 
 // ListObjects lists objects in a bucket
@@ -226,9 +218,9 @@ func (c *S3Client) ListObjects(ctx context.Context, input *ListObjectsInput) (*L
 	}
 
 	output := &ListObjectsOutput{
-		Contents:    make([]ObjectInfo, 0, len(result.Contents)),
+		Contents:    make([]domain.StorageObject, 0, len(result.Contents)),
 		CommonPrefixes: make([]string, 0, len(result.CommonPrefixes)),
-		IsTruncated: result.IsTruncated,
+		IsTruncated: aws.ToBool(result.IsTruncated),
 	}
 
 	if result.NextContinuationToken != nil {
@@ -236,16 +228,16 @@ func (c *S3Client) ListObjects(ctx context.Context, input *ListObjectsInput) (*L
 	}
 
 	for _, obj := range result.Contents {
-		output.Contents = append(output.Contents, ObjectInfo{
-			Key:          *obj.Key,
-			Size:         obj.Size,
-			LastModified: *obj.LastModified,
-			ETag:         *obj.ETag,
+		output.Contents = append(output.Contents, domain.StorageObject{
+			Key:          aws.ToString(obj.Key),
+			Size:         aws.ToInt64(obj.Size),
+			LastModified: aws.ToTime(obj.LastModified),
+			ETag:         aws.ToString(obj.ETag),
 		})
 	}
 
 	for _, prefix := range result.CommonPrefixes {
-		output.CommonPrefixes = append(output.CommonPrefixes, *prefix.Prefix)
+		output.CommonPrefixes = append(output.CommonPrefixes, aws.ToString(prefix.Prefix))
 	}
 
 	return output, nil

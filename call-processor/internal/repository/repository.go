@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -234,9 +233,9 @@ func (r *PostgresRecordingRepository) List(ctx context.Context, filter domain.Re
 	args := []interface{}{}
 	argPos := 1
 	
-	if filter.Status != "" {
-		baseQuery += fmt.Sprintf(" AND status = $%d", argPos)
-		countQuery += fmt.Sprintf(" AND status = $%d", argPos)
+	if len(filter.Status) > 0 {
+		baseQuery += fmt.Sprintf(" AND status = ANY($%d)", argPos)
+		countQuery += fmt.Sprintf(" AND status = ANY($%d)", argPos)
 		args = append(args, filter.Status)
 		argPos++
 	}
@@ -248,17 +247,17 @@ func (r *PostgresRecordingRepository) List(ctx context.Context, filter domain.Re
 		argPos++
 	}
 	
-	if !filter.CreatedAfter.IsZero() {
+	if !filter.From.IsZero() {
 		baseQuery += fmt.Sprintf(" AND created_at >= $%d", argPos)
 		countQuery += fmt.Sprintf(" AND created_at >= $%d", argPos)
-		args = append(args, filter.CreatedAfter)
+		args = append(args, filter.From)
 		argPos++
 	}
 	
-	if !filter.CreatedBefore.IsZero() {
+	if !filter.To.IsZero() {
 		baseQuery += fmt.Sprintf(" AND created_at <= $%d", argPos)
 		countQuery += fmt.Sprintf(" AND created_at <= $%d", argPos)
-		args = append(args, filter.CreatedBefore)
+		args = append(args, filter.To)
 		argPos++
 	}
 	
@@ -266,14 +265,15 @@ func (r *PostgresRecordingRepository) List(ctx context.Context, filter domain.Re
 	baseQuery += " ORDER BY created_at DESC"
 	
 	// Add pagination
-	if pagination.Limit > 0 {
+	if pagination.PageSize > 0 {
 		baseQuery += fmt.Sprintf(" LIMIT $%d", argPos)
-		args = append(args, pagination.Limit)
+		args = append(args, pagination.PageSize)
 		argPos++
 		
-		if pagination.Offset > 0 {
+		if pagination.Page > 1 {
+			offset := (pagination.Page - 1) * pagination.PageSize
 			baseQuery += fmt.Sprintf(" OFFSET $%d", argPos)
-			args = append(args, pagination.Offset)
+			args = append(args, offset)
 		}
 	}
 	

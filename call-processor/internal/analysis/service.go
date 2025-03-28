@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -162,6 +163,92 @@ func (s *Service) StartAnalysis(ctx context.Context, req AnalysisRequest) (*Anal
 			AnalysisType: existingAnalysis.AnalysisType,
 			Status:       existingAnalysis.Status,
 		}, nil
+	} else if !errors.Is(err, repository.ErrNotFound) {
+		// Unexpected error
+		return nil, fmt.Errorf("failed to check existing analysis: %w", err)
+	}
+
+	// Create analysis entity
+	analysisID := uuid.New()
+	
+	// Marshal config to JSON
+	configJSON := []byte("{}")
+	if req.Config != nil {
+		var err error
+		configJSON, err = json.Marshal(req.Config)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal config: %w", err)
+		}
+	}
+	
+	analysis := &domain.Analysis{
+		ID:           analysisID,
+		RecordingID:  req.RecordingID,
+		AnalysisType: string(req.AnalysisType),
+		Status:       domain.AnalysisStatusPending,
+		Results:      nil,
+	}
+
+	// Save to database
+	err = s.analysisRepository.Create(ctx, analysis)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create analysis: %w", err)
+	}
+
+	// Create job payload
+	jobPayload := map[string]interface{}{
+		"analysisId":   analysisID.String(),
+		"recordingId":  req.RecordingID.String(),
+		"analysisType": string(req.AnalysisType),
+		"config":       req.Config,
+	}
+
+	jobPayloadJSON, err := json.Marshal(jobPayload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal job payload: %w", err)
+	}
+
+	// Create job
+	job := &domain.Job{
+		ID:           uuid.New(),
+		JobType:      "analysis",
+		Status:       domain.JobStatusPending,
+		Priority:     req.Priority,
+		Payload:      jobPayloadJSON,
+		MaxAttempts:  s.config.JobMaxRetries,
+		ScheduledFor: time.Now(),
+	}
+
+	// Enqueue job
+	err = s.workerManager.EnqueueJob(ctx, job)
+	if err != nil {
+		return nil, fmt.Errorf("failed to enqueue job: %w", err)
+	}
+
+	// Publish event
+	event := &domain.Event{
+		ID:         uuid.New(),
+		EventType:  "analysis.started",
+		EntityType: "analysis",
+		EntityID:   analysisID,
+		UserID:     &req.UserID,
+		CreatedAt:  time.Now(),
+		Data:       configJSON,
+	}
+
+	err = s.eventPublisher.Publish(ctx, event)
+	if err != nil {
+		// Log but continue
+		fmt.Printf("Failed to publish start event: %v\n", err)
+	}
+
+	return &AnalysisResponse{
+		AnalysisID:   analysisID,
+		RecordingID:  req.RecordingID,
+		AnalysisType: string(req.AnalysisType),
+		Status:       domain.AnalysisStatusPending,
+		JobID:        job.ID,
+	}, nil
 }
 
 // GetAnalysis retrieves an analysis by ID
@@ -428,89 +515,3 @@ func calculateDummySentiment(text string) float64 {
 	
 	return score
 }
-	} else if !errors.Is(err, repository.ErrNotFound) {
-		// Unexpected error
-		return nil, fmt.Errorf("failed to check existing analysis: %w", err)
-	}
-
-	// Create analysis entity
-	analysisID := uuid.New()
-	
-	// Marshal config to JSON
-	configJSON := []byte("{}")
-	if req.Config != nil {
-		var err error
-		configJSON, err = json.Marshal(req.Config)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal config: %w", err)
-		}
-	}
-	
-	analysis := &domain.Analysis{
-		ID:           analysisID,
-		RecordingID:  req.RecordingID,
-		AnalysisType: string(req.AnalysisType),
-		Status:       domain.AnalysisStatusPending,
-		Results:      nil,
-	}
-
-	// Save to database
-	err = s.analysisRepository.Create(ctx, analysis)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create analysis: %w", err)
-	}
-
-	// Create job payload
-	jobPayload := map[string]interface{}{
-		"analysisId":   analysisID.String(),
-		"recordingId":  req.RecordingID.String(),
-		"analysisType": string(req.AnalysisType),
-		"config":       req.Config,
-	}
-
-	jobPayloadJSON, err := json.Marshal(jobPayload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal job payload: %w", err)
-	}
-
-	// Create job
-	job := &domain.Job{
-		ID:           uuid.New(),
-		JobType:      "analysis",
-		Status:       domain.JobStatusPending,
-		Priority:     req.Priority,
-		Payload:      jobPayloadJSON,
-		MaxAttempts:  s.config.JobMaxRetries,
-		ScheduledFor: time.Now(),
-	}
-
-	// Enqueue job
-	err = s.workerManager.EnqueueJob(ctx, job)
-	if err != nil {
-		return nil, fmt.Errorf("failed to enqueue job: %w", err)
-	}
-
-	// Publish event
-	event := &domain.Event{
-		ID:         uuid.New(),
-		EventType:  "analysis.started",
-		EntityType: "analysis",
-		EntityID:   analysisID,
-		UserID:     &req.UserID,
-		CreatedAt:  time.Now(),
-		Data:       jobPayloadJSON,
-	}
-	
-	err = s.eventPublisher.Publish(ctx, event)
-	if err != nil {
-		// Log the error but don't fail the request
-		fmt.Printf("Failed to publish event: %v\n", err)
-	}
-
-	return &AnalysisResponse{
-		AnalysisID:   analysisID,
-		RecordingID:  req.RecordingID,
-		AnalysisType: string(req.AnalysisType),
-		Status:       domain.AnalysisStatusPending,
-		JobID:        job.ID,
-	}, nil
