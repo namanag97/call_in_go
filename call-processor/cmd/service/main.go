@@ -22,6 +22,7 @@ import (
 	"github.com/namanag97/call_in_go/call-processor/internal/analysis"
 	"github.com/namanag97/call_in_go/call-processor/internal/domain"  // Make sure this is imported
 	"github.com/namanag97/call_in_go/call-processor/internal/event"
+	"github.com/namanag97/call_in_go/call-processor/internal/bulk"
 	"github.com/namanag97/call_in_go/call-processor/internal/ingestion"
 	"github.com/namanag97/call_in_go/call-processor/internal/repository"
 	"github.com/namanag97/call_in_go/call-processor/internal/storage"
@@ -44,6 +45,7 @@ type services struct {
 	ingestionService     *ingestion.Service
 	transcriptionService *transcription.Service
 	analysisService      *analysis.Service
+	bulkService          *bulk.Service
 }
 
 // Environment variable helpers
@@ -96,6 +98,7 @@ func initControllers(
 		api.NewTranscriptionController(services.transcriptionService, repos.transcriptionRepo),
 		api.NewAnalysisController(services.analysisService, repos.analysisRepo),
 		api.NewJobController(workerManager),
+		api.NewBulkOperationsController(services.bulkService), // Add this line
 	}
 }
 
@@ -252,8 +255,25 @@ func initWorkerManager(jobRepo repository.JobRepository) worker.Manager {
 		ShutdownTimeout: time.Duration(getEnvInt("WORKER_SHUTDOWN_TIMEOUT_SEC", 30)) * time.Second,
 	}
 	
+	// Check if enhanced worker manager is enabled
+	if getEnvBool("ENABLE_ENHANCED_WORKER", true) {
+		enhancedConfig := worker.EnhancedConfig{
+			StatsRefreshInterval: time.Duration(getEnvInt("WORKER_STATS_REFRESH_SEC", 30)) * time.Second,
+			JobHistorySize:       getEnvInt("WORKER_JOB_HISTORY_SIZE", 100),
+			HealthCheckInterval:  time.Duration(getEnvInt("WORKER_HEALTH_CHECK_SEC", 60)) * time.Second,
+			EnableRetryBackoff:   getEnvBool("WORKER_ENABLE_RETRY_BACKOFF", true),
+			MaxBackoffDelay:      time.Duration(getEnvInt("WORKER_MAX_BACKOFF_SEC", 3600)) * time.Second,
+		}
+		
+		return worker.NewEnhancedWorkerManager(config, jobRepo, enhancedConfig)
+	}
+	
+	// Use standard worker manager
 	return worker.NewWorkerManager(config, jobRepo)
 }
+
+// Add a new endpoint to the JobController to expose worker stats
+
 
 // STT client initialization
 func initSTTClient() stt.Client {
@@ -334,6 +354,23 @@ func initServices(
 		eventBus,
 		workerManager,
 	)
+	// Initialize bulk operations service
+	bulkConfig := bulk.Config{
+		MaxItemsPerBulkRequest: getEnvInt("BULK_MAX_ITEMS", 1000),
+		BulkWorkers:            getEnvInt("BULK_WORKERS", 5),
+		BatchSize:              getEnvInt("BULK_BATCH_SIZE", 50),
+		DefaultPriority:        getEnvInt("BULK_DEFAULT_PRIORITY", 5),
+	}
+	
+	bulkService := bulk.NewService(
+		bulkConfig,
+		repos.jobRepo,
+		repos.recordingRepo,
+		ingestionService,
+		transcriptionService,
+		eventBus,
+		workerManager,
+	)
 	
 	// Register analysis processors
 	analysisService.RegisterProcessor(analysis.NewSentimentProcessor())
@@ -343,6 +380,7 @@ func initServices(
 		ingestionService:     ingestionService,
 		transcriptionService: transcriptionService,
 		analysisService:      analysisService,
+		bulkService:          bulkService,
 	}
 }
 
