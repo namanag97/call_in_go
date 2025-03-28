@@ -1,8 +1,10 @@
 package api
 
 import (
+	"encoding/csv"
 	"encoding/json" // Add this import
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings" // Add this import
@@ -409,13 +411,11 @@ func NewTranscriptionController(transcriptionService *transcription.Service, tra
 
 // RegisterRoutes registers the controller's routes with the router
 func (c *TranscriptionController) RegisterRoutes(router *gin.RouterGroup) {
-	transcriptions := router.Group("/transcriptions")
-	{
-		transcriptions.POST("", c.StartTranscription)
-		transcriptions.GET("", c.ListTranscriptions)
-		transcriptions.GET("/:id", c.GetTranscription)
-		transcriptions.GET("/recording/:recordingId", c.GetTranscriptionByRecordingID)
-	}
+	router.POST("/recordings/:id/transcribe", c.StartTranscription)
+	router.GET("/transcriptions/:id", c.GetTranscription)
+	router.GET("/recordings/:id/transcription", c.GetTranscriptionByRecordingID)
+	router.GET("/transcriptions", c.ListTranscriptions)
+	router.POST("/transcriptions/import-csv", c.ImportTranscriptionsFromCSV)
 }
 
 // StartTranscription starts the transcription process
@@ -657,6 +657,151 @@ func (c *TranscriptionController) ListTranscriptions(ctx *gin.Context) {
 		Success: true,
 		Data:    response,
 	})
+}
+
+// ImportTranscriptionsFromCSV imports transcriptions from a CSV file
+func (c *TranscriptionController) ImportTranscriptionsFromCSV(ctx *gin.Context) {
+	file, err := ctx.FormFile("file")
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "missing_file",
+			Message: "No file provided",
+		})
+		return
+	}
+
+	// Open the file
+	src, err := file.Open()
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error:   "file_error",
+			Message: "Failed to open file",
+		})
+		return
+	}
+	defer src.Close()
+
+	// Parse CSV
+	reader := csv.NewReader(src)
+	reader.FieldsPerRecord = -1 // Allow variable number of fields
+	records, err := reader.ReadAll()
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "invalid_csv",
+			Message: "Failed to parse CSV: " + err.Error(),
+		})
+		return
+	}
+
+	if len(records) <= 1 {
+		ctx.JSON(http.StatusBadRequest, ErrorResponse{
+			Error:   "empty_csv",
+			Message: "CSV file contains no data rows",
+		})
+		return
+	}
+
+	// Process records
+	succeeded := 0
+	failed := 0
+	failures := []string{}
+
+	// Skip header row
+	for i, record := range records[1:] {
+		if len(record) < 2 {
+			failed++
+			failures = append(failures, fmt.Sprintf("Row %d: Not enough columns", i+2))
+			continue
+		}
+
+		// Extract filename and transcript
+		filename := record[0]
+		var durationSec float64
+		if len(record) >= 3 {
+			durationSec, _ = strconv.ParseFloat(record[2], 64)
+		}
+		
+		transcript := ""
+		if len(record) >= 4 {
+			transcript = record[3]
+		}
+
+		if filename == "" {
+			failed++
+			failures = append(failures, fmt.Sprintf("Row %d: Missing filename", i+2))
+			continue
+		}
+
+		// Create a minimal recording entry if it doesn't exist
+		recordingID, err := c.createRecordingIfNotExists(ctx, filename, durationSec)
+		if err != nil {
+			failed++
+			failures = append(failures, fmt.Sprintf("Row %d: Failed to create recording: %s", i+2, err.Error()))
+			continue
+		}
+
+		// Create the transcription
+		transcription := &domain.Transcription{
+			RecordingID: recordingID,
+			FullText:    transcript,
+			Status:      domain.TranscriptionStatusCompleted,
+			CompletedAt: time.Now(),
+		}
+
+		err = c.transcriptionRepo.Create(ctx, transcription)
+		if err != nil {
+			failed++
+			failures = append(failures, fmt.Sprintf("Row %d: Failed to create transcription: %s", i+2, err.Error()))
+			continue
+		}
+
+		succeeded++
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": fmt.Sprintf("Processed %d transcriptions", len(records)-1),
+		"data": gin.H{
+			"succeeded": succeeded,
+			"failed":    failed,
+			"failures":  failures,
+		},
+	})
+}
+
+// createRecordingIfNotExists creates a recording entry if it doesn't exist yet
+func (c *TranscriptionController) createRecordingIfNotExists(ctx context.Context, filename string, durationSec float64) (uuid.UUID, error) {
+	// Check if recording exists by filename
+	recordings, _, err := c.transcriptionRepo.GetRecordingByFilename(ctx, filename)
+	if err != nil && !errors.Is(err, repository.ErrNotFound) {
+		return uuid.Nil, err
+	}
+
+	if len(recordings) > 0 {
+		return recordings[0].ID, nil
+	}
+
+	// Create a new recording entry
+	recording := &domain.Recording{
+		ID:              uuid.New(),
+		FileName:        filename,
+		FilePath:        fmt.Sprintf("imported/%s", filename),
+		FileSize:        0, // Unknown
+		DurationSeconds: int(durationSec),
+		MimeType:        "audio/mpeg", // Assume audio file
+		MD5Hash:         "imported-no-hash", // Placeholder
+		Status:          domain.RecordingStatusCompleted,
+		Source:          "csv-import",
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
+	}
+
+	err = c.transcriptionRepo.CreateRecording(ctx, recording)
+	if err != nil {
+		return uuid.Nil, err
+	}
+
+	return recording.ID, nil
 }
 
 // AnalysisController handles analysis-related API endpoints

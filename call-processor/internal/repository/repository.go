@@ -14,10 +14,15 @@ import (
 
 // Repository errors
 var (
-	ErrNotFound    = domain.ErrNotFound
-	ErrInvalidID   = errors.New("invalid id")
+	ErrNotFound    = errors.New("entity not found")
+	ErrInvalidID   = errors.New("invalid ID")
 	ErrTransaction = errors.New("transaction error")
 )
+
+// IsNotFound checks if the error is an ErrNotFound error
+func IsNotFound(err error) bool {
+	return errors.Is(err, ErrNotFound)
+}
 
 // RecordingRepository defines the interface for recording data access
 type RecordingRepository interface {
@@ -41,6 +46,8 @@ type TranscriptionRepository interface {
 	UpdateStatus(ctx context.Context, id uuid.UUID, status domain.TranscriptionStatus) error
 	AddSegment(ctx context.Context, segment *domain.TranscriptionSegment) error
 	GetSegments(ctx context.Context, transcriptionID uuid.UUID) ([]domain.TranscriptionSegment, error)
+	GetRecordingByFilename(ctx context.Context, filename string) ([]*domain.Recording, int, error)
+	CreateRecording(ctx context.Context, recording *domain.Recording) error
 }
 
 // AnalysisRepository defines the interface for analysis data access
@@ -78,6 +85,7 @@ type JobRepository interface {
 	MarkFailed(ctx context.Context, id uuid.UUID, err error) error
 	ReleaseJob(ctx context.Context, id uuid.UUID) error
 	CountByStatus(ctx context.Context, status domain.JobStatus) (int, error)
+	FindStuckJobs(ctx context.Context, status domain.JobStatus, olderThan time.Time) ([]*domain.Job, error)
 }
 
 // EventRepository defines the interface for event data access

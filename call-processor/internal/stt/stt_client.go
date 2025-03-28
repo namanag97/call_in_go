@@ -1,12 +1,14 @@
 package stt
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -22,14 +24,12 @@ type TranscribeInput struct {
 	Language          string
 	IncludeTimestamps bool
 	SpeakerDiarization bool
-	MaxSpeakers       int
-	Vocabulary        []string
 }
 
 // TranscribeOutput represents the output from transcribing audio
 type TranscribeOutput struct {
 	Text             string
-	Language         string
+	DurationSeconds  float64
 	Confidence       float64
 	Segments         []Segment
 	WordCount        int
@@ -45,75 +45,32 @@ type Segment struct {
 	Confidence float64
 }
 
-// Provider represents a speech-to-text provider
-type Provider string
-
-const (
-	// ProviderGoogle represents Google Cloud Speech-to-Text
-	ProviderGoogle Provider = "google"
-	// ProviderAWS represents Amazon Transcribe
-	ProviderAWS Provider = "aws"
-	// ProviderAzure represents Azure Speech Services
-	ProviderAzure Provider = "azure"
-	// ProviderWhisper represents OpenAI Whisper
-	ProviderWhisper Provider = "whisper"
-)
-
-// Config contains configuration for the STT client
+// Config contains configuration for the ElevenLabs STT client
 type Config struct {
-	Provider       Provider
 	APIKey         string
-	Region         string
 	Endpoint       string
 	TimeoutSeconds int
 }
 
-// MultiProviderClient implements Client using multiple providers with fallback
-type MultiProviderClient struct {
-	primaryClient   Client
-	fallbackClients []Client
-}
-
-// NewMultiProviderClient creates a new MultiProviderClient
-func NewMultiProviderClient(primary Client, fallbacks ...Client) *MultiProviderClient {
-	return &MultiProviderClient{
-		primaryClient:   primary,
-		fallbackClients: fallbacks,
-	}
-}
-
-// Transcribe transcribes audio using the primary provider with fallback
-func (c *MultiProviderClient) Transcribe(ctx context.Context, input *TranscribeInput) (*TranscribeOutput, error) {
-	// Try primary client first
-	output, err := c.primaryClient.Transcribe(ctx, input)
-	if err == nil {
-		return output, nil
-	}
-
-	// Log primary failure
-	fmt.Printf("Primary STT provider failed: %v. Trying fallbacks.\n", err)
-
-	// Try fallbacks in order
-	for i, fallback := range c.fallbackClients {
-		output, err := fallback.Transcribe(ctx, input)
-		if err == nil {
-			return output, nil
-		}
-		fmt.Printf("Fallback STT provider %d failed: %v\n", i+1, err)
-	}
-
-	return nil, fmt.Errorf("all STT providers failed")
-}
-
-// GoogleSpeechClient implements Client using Google Cloud Speech-to-Text
-type GoogleSpeechClient struct {
+// ElevenLabsClient implements Client using ElevenLabs Speech-to-Text API
+type ElevenLabsClient struct {
 	config Config
 	client *http.Client
 }
 
-// NewGoogleSpeechClient creates a new GoogleSpeechClient
-func NewGoogleSpeechClient(config Config) *GoogleSpeechClient {
-	return &GoogleSpeechClient{
+// NewElevenLabsClient creates a new ElevenLabsClient
+func NewElevenLabsClient(config Config) *ElevenLabsClient {
+	// Set default endpoint if not provided
+	if config.Endpoint == "" {
+		config.Endpoint = "https://api.elevenlabs.io/v1/speech-to-text/transcribe"
+	}
+	
+	// Set default timeout if not provided
+	if config.TimeoutSeconds <= 0 {
+		config.TimeoutSeconds = 300 // 5 minutes default
+	}
+	
+	return &ElevenLabsClient{
 		config: config,
 		client: &http.Client{
 			Timeout: time.Duration(config.TimeoutSeconds) * time.Second,
@@ -121,211 +78,136 @@ func NewGoogleSpeechClient(config Config) *GoogleSpeechClient {
 	}
 }
 
-// Transcribe transcribes audio using Google Cloud Speech-to-Text
-func (c *GoogleSpeechClient) Transcribe(ctx context.Context, input *TranscribeInput) (*TranscribeOutput, error) {
+// Transcribe transcribes audio using ElevenLabs API
+func (c *ElevenLabsClient) Transcribe(ctx context.Context, input *TranscribeInput) (*TranscribeOutput, error) {
 	startTime := time.Now()
-
-	// Prepare request payload
-	requestBody := map[string]interface{}{
-		"config": map[string]interface{}{
-			"encoding":        getGoogleEncoding(input.MimeType),
-			"sampleRateHertz": 16000, // Assuming 16kHz, adjust as needed
-			"languageCode":    input.Language,
-			"enableWordTimeOffsets": input.IncludeTimestamps,
-			"enableAutomaticPunctuation": true,
-			"model":           "latest_long", // Use appropriate model
-		},
-		"audio": map[string]interface{}{
-			"content": encodeBase64(input.AudioData),
-		},
+	
+	// Determine file extension based on mime type
+	fileExt := ".mp3" // Default
+	switch input.MimeType {
+	case "audio/wav", "audio/x-wav":
+		fileExt = ".wav"
+	case "audio/aac":
+		fileExt = ".aac"
+	case "audio/m4a":
+		fileExt = ".m4a"
+	case "audio/ogg":
+		fileExt = ".ogg"
+	case "audio/flac":
+		fileExt = ".flac"
 	}
-
-	if input.SpeakerDiarization {
-		requestBody["config"].(map[string]interface{})["diarizationConfig"] = map[string]interface{}{
-			"enableSpeakerDiarization": true,
-			"maxSpeakerCount":          input.MaxSpeakers,
-		}
-	}
-
-	// Add vocabulary if provided
-	if len(input.Vocabulary) > 0 {
-		requestBody["config"].(map[string]interface{})["speechContexts"] = []map[string]interface{}{
-			{
-				"phrases": input.Vocabulary,
-			},
-		}
-	}
-
-	requestJSON, err := json.Marshal(requestBody)
+	
+	// Create multipart form
+	var formBuf bytes.Buffer
+	formWriter := multipart.NewWriter(&formBuf)
+	
+	// Add file field
+	fileWriter, err := formWriter.CreateFormFile("file", "audio"+fileExt)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, fmt.Errorf("failed to create form file: %w", err)
 	}
-
+	
+	if _, err := fileWriter.Write(input.AudioData); err != nil {
+		return nil, fmt.Errorf("failed to write audio data: %w", err)
+	}
+	
+	// Add other form fields
+	if err := formWriter.WriteField("model_id", "scribe_v1"); err != nil {
+		return nil, fmt.Errorf("failed to add model_id field: %w", err)
+	}
+	
+	if err := formWriter.WriteField("tag_audio_events", "true"); err != nil {
+		return nil, fmt.Errorf("failed to add tag_audio_events field: %w", err)
+	}
+	
+	// Add language code if provided
+	if input.Language != "" {
+		if err := formWriter.WriteField("language_code", input.Language); err != nil {
+			return nil, fmt.Errorf("failed to add language_code field: %w", err)
+		}
+	}
+	
+	// Add diarization if requested
+	if input.SpeakerDiarization {
+		if err := formWriter.WriteField("diarize", "true"); err != nil {
+			return nil, fmt.Errorf("failed to add diarize field: %w", err)
+		}
+	}
+	
+	formWriter.Close()
+	
 	// Create HTTP request
-	req, err := http.NewRequestWithContext(
-		ctx,
-		"POST",
-		c.config.Endpoint,
-		strings.NewReader(string(requestJSON)),
-	)
+	req, err := http.NewRequestWithContext(ctx, "POST", c.config.Endpoint, &formBuf)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.config.APIKey))
-
-	// Send request
+	
+	req.Header.Set("Content-Type", formWriter.FormDataContentType())
+	req.Header.Set("xi-api-key", c.config.APIKey)
+	
+	// Execute request
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
-
+	
 	// Read response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
-
-	// Check status code
+	
+	// Check for error response
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("API error: %s - %s", resp.Status, string(body))
 	}
-
+	
 	// Parse response
 	var response struct {
-		Results []struct {
-			Alternatives []struct {
-				Transcript string  `json:"transcript"`
-				Confidence float64 `json:"confidence"`
-				Words      []struct {
-					StartTime struct {
-						Seconds int64 `json:"seconds"`
-						Nanos   int64 `json:"nanos"`
-					} `json:"startTime"`
-					EndTime struct {
-						Seconds int64 `json:"seconds"`
-						Nanos   int64 `json:"nanos"`
-					} `json:"endTime"`
-					Word     string  `json:"word"`
-					Speaker  string  `json:"speakerTag,omitempty"`
-				} `json:"words"`
-			} `json:"alternatives"`
-		} `json:"results"`
+		Text      string  `json:"text"`
+		Segments  []struct {
+			Text      string  `json:"text"`
+			StartTime float64 `json:"start_time"`
+			EndTime   float64 `json:"end_time"`
+			Speaker   string  `json:"speaker"`
+			Confidence float64 `json:"confidence"`
+		} `json:"segments"`
+		Duration       float64 `json:"duration"`
+		WordCount      int     `json:"word_count"`
+		Confidence     float64 `json:"confidence"`
+		ProcessingTime int64   `json:"processing_time_ms"`
 	}
-
-	err = json.Unmarshal(body, &response)
-	if err != nil {
+	
+	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
-
-	// Process results
-	output := &TranscribeOutput{
-		Language:         input.Language,
-		ProcessingTimeMs: time.Since(startTime).Milliseconds(),
-		Segments:         []Segment{},
-	}
-
-	var fullText strings.Builder
-	var wordCount int
-	var confidence float64
-	var segments []Segment
-
-	for _, result := range response.Results {
-		for _, alt := range result.Alternatives {
-			if alt.Transcript != "" {
-				fullText.WriteString(alt.Transcript)
-				confidence = alt.Confidence
-				break
-			}
-		}
-		if fullText.Len() > 0 {
-			break
-		}
-	}
-
-	// Process words and build segments
-	var currentSegment Segment
-	var wordBuffer strings.Builder
-
-	for i, word := range response.Results[0].Alternatives[0].Words {
-		wordCount++
-		
-		// Convert time to seconds
-		startTime := float64(word.StartTime.Seconds) + float64(word.StartTime.Nanos)/1e9
-		endTime := float64(word.EndTime.Seconds) + float64(word.EndTime.Nanos)/1e9
-		
-		// First word or new speaker
-		if i == 0 || word.Speaker != currentSegment.Speaker {
-			// Save previous segment if it exists
-			if i > 0 {
-				currentSegment.Text = wordBuffer.String()
-				segments = append(segments, currentSegment)
-				wordBuffer.Reset()
-			}
-			
-			// Start new segment
-			currentSegment = Segment{
-				StartTime: startTime,
-				EndTime:   endTime,
-				Speaker:   word.Speaker,
-				Confidence: confidence, // Use overall confidence as default
-			}
-			
-			wordBuffer.WriteString(word.Word)
-		} else {
-			// Continue current segment
-			currentSegment.EndTime = endTime
-			wordBuffer.WriteString(" " + word.Word)
-		}
-		
-		// Last word
-		if i == len(response.Results[0].Alternatives[0].Words)-1 {
-			currentSegment.Text = wordBuffer.String()
-			segments = append(segments, currentSegment)
-		}
-	}
-
-	output.Text = fullText.String()
-	output.WordCount = wordCount
-	output.Confidence = confidence
-	output.Segments = segments
 	
-	// If no segments were created but we have text, create a single segment
-	if len(segments) == 0 && output.Text != "" {
-		segments = append(segments, Segment{
-			StartTime:  0,
-			EndTime:    0, // We don't know the duration
-			Text:       output.Text,
-			Confidence: output.Confidence,
-		})
+	// Convert to our output format
+	output := &TranscribeOutput{
+		Text:            response.Text,
+		DurationSeconds: response.Duration,
+		Confidence:      response.Confidence,
+		WordCount:       response.WordCount,
+		ProcessingTimeMs: response.ProcessingTime,
+		Segments:        make([]Segment, len(response.Segments)),
 	}
-
+	
+	// Convert segments
+	for i, seg := range response.Segments {
+		output.Segments[i] = Segment{
+			StartTime:  seg.StartTime,
+			EndTime:    seg.EndTime,
+			Text:       seg.Text,
+			Speaker:    seg.Speaker,
+			Confidence: seg.Confidence,
+		}
+	}
+	
 	return output, nil
 }
 
-// getGoogleEncoding converts MIME type to Google encoding format
-func getGoogleEncoding(mimeType string) string {
-	switch mimeType {
-	case "audio/wav", "audio/x-wav", "audio/wave":
-		return "LINEAR16"
-	case "audio/ogg", "application/ogg":
-		return "OGG_OPUS"
-	case "audio/mpeg", "audio/mp3":
-		return "MP3"
-	case "audio/flac":
-		return "FLAC"
-	default:
-		return "ENCODING_UNSPECIFIED"
-	}
-}
-
-// encodeBase64 encodes binary data to base64 string
+// Utility function to encode binary data to base64 string
 func encodeBase64(data []byte) string {
-	// Implementation omitted for brevity - use standard library base64 encoding
-	return ""
+	return base64.StdEncoding.EncodeToString(data)
 }
-
-// Additional STT client implementations (AWS, Azure, Whisper) would follow a similar pattern
-// but with provider-specific API calls and response parsing

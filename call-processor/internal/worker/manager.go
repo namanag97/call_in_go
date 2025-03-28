@@ -22,6 +22,7 @@ type Manager interface {
 	RegisterHandler(jobType string, handler JobHandler)
 	EnqueueJob(ctx context.Context, job *domain.Job) error
 	GetJobStatus(ctx context.Context, jobID uuid.UUID) (*domain.Job, error)
+	ClearStuckJobs(ctx context.Context, olderThan time.Duration) (int, error)
 }
 
 // RegisterHandler registers a handler for a job type
@@ -353,4 +354,43 @@ func (m *WorkerManager) Stop() error {
 	}
 	
 	return nil
+}
+
+// ClearStuckJobs finds and clears jobs that have been stuck in processing state for longer than the specified duration
+func (m *WorkerManager) ClearStuckJobs(ctx context.Context, olderThan time.Duration) (int, error) {
+	fmt.Printf("Clearing jobs stuck in processing state for longer than %v\n", olderThan)
+	
+	cutoffTime := time.Now().Add(-olderThan)
+	
+	// Get stuck jobs
+	stuckJobs, err := m.jobRepo.FindStuckJobs(ctx, domain.JobStatusProcessing, cutoffTime)
+	if err != nil {
+		return 0, fmt.Errorf("failed to find stuck jobs: %w", err)
+	}
+	
+	count := 0
+	for _, job := range stuckJobs {
+		if job.Attempts < job.MaxAttempts-1 {
+			// Mark for retry
+			job.Status = domain.JobStatusRetrying
+			job.Attempts++
+			job.LastError = "Job processing timed out"
+			job.ScheduledFor = time.Now().Add(m.config.RetryDelay)
+			
+			if err := m.jobRepo.Update(ctx, job); err != nil {
+				fmt.Printf("Error marking stuck job %s for retry: %v\n", job.ID, err)
+				continue
+			}
+		} else {
+			// Mark as failed
+			if err := m.jobRepo.MarkFailed(ctx, job.ID, errors.New("job processing timed out after max attempts")); err != nil {
+				fmt.Printf("Error marking stuck job %s as failed: %v\n", job.ID, err)
+				continue
+			}
+		}
+		count++
+	}
+	
+	fmt.Printf("Cleared %d stuck jobs\n", count)
+	return count, nil
 }

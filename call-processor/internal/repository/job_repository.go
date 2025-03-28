@@ -417,3 +417,43 @@ func (r *PostgresJobRepository) ClearStuckJobs(ctx context.Context, olderThan ti
 	count := int(result.RowsAffected())
 	return count, nil
 }
+
+// FindStuckJobs finds jobs that have been in a particular status for longer than a specified time
+func (r *PostgresJobRepository) FindStuckJobs(ctx context.Context, status domain.JobStatus, olderThan time.Time) ([]*domain.Job, error) {
+	query := `
+		SELECT 
+			id, job_type, status, priority, payload, max_attempts, attempts,
+			last_error, locked_by, locked_at, created_at, updated_at, scheduled_for
+		FROM jobs
+		WHERE status = $1
+		AND locked_at < $2
+	`
+	
+	rows, err := r.db.Query(ctx, query, status, olderThan)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	jobs := []*domain.Job{}
+	
+	for rows.Next() {
+		var job domain.Job
+		err := rows.Scan(
+			&job.ID, &job.JobType, &job.Status, &job.Priority, &job.Payload,
+			&job.MaxAttempts, &job.Attempts, &job.LastError, &job.LockedBy, &job.LockedAt,
+			&job.CreatedAt, &job.UpdatedAt, &job.ScheduledFor,
+		)
+		if err != nil {
+			return nil, err
+		}
+		
+		jobs = append(jobs, &job)
+	}
+	
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	
+	return jobs, nil
+}
