@@ -76,7 +76,7 @@ func NewService(
 	analysisRepository repository.AnalysisRepository,
 	eventPublisher event.Publisher,
 	workerManager worker.Manager,
-) *Service {
+	) *Service {
 	s := &Service{
 		config:                 config,
 		recordingRepository:    recordingRepository,
@@ -137,8 +137,7 @@ func (s *Service) StartAnalysis(ctx context.Context, req AnalysisRequest) (*Anal
 		return nil, ErrUnsupportedType
 	}
 
-	// Check if recording exists
-	recording, err := s.recordingRepository.Get(ctx, req.RecordingID)
+	_, err := s.recordingRepository.Get(ctx, req.RecordingID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get recording: %w", err)
 	}

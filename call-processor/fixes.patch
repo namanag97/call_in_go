@@ -1,0 +1,49 @@
+diff --git a/internal/api/controllers.go b/internal/api/controllers.go
+index 8c4c732..a7da89f 100644
+--- a/internal/api/controllers.go
++++ b/internal/api/controllers.go
+@@ -3,7 +3,6 @@ package api
+ import (
+ 	"encoding/json"
+ 	"errors"
+-	"fmt"
+ 	"net/http"
+ 	"strings"
+ 	"strconv"
+@@ -14,6 +13,7 @@ import (
+ 	"github.com/namanag97/call_in_go/call-processor/internal/ingestion"
+ 	"github.com/namanag97/call_in_go/call-processor/internal/repository"
+ 	"github.com/namanag97/call_in_go/call-processor/internal/transcription"
++	"github.com/namanag97/call_in_go/call-processor/internal/worker"
+ 	"github.com/namanag97/call_in_go/call-processor/internal/analysis"
+ )
+
+@@ -965,11 +965,11 @@ func (c *AnalysisController) ListAnalyses(ctx *gin.Context) {
+ 
+ // JobController handles job-related API endpoints
+ type JobController struct {
+-	workerManager worker.Manager
++	workerManager worker.Manager
+ }
+ 
+ // NewJobController creates a new JobController
+-func NewJobController(workerManager worker.Manager) *JobController {
++func NewJobController(workerManager worker.Manager) *JobController {
+ 	return &JobController{
+ 		workerManager: workerManager,
+ 	}
+
+diff --git a/internal/api/server.go b/internal/api/server.go
+index b8a2ffd..e7d0193 100644
+--- a/internal/api/server.go
++++ b/internal/api/server.go
+@@ -162,7 +162,8 @@ func LoggerMiddleware() gin.HandlerFunc {
+ func RequestIDMiddleware() gin.HandlerFunc {
+ 	return func(c *gin.Context) {
+ 		// Get existing request ID from header or generate a new one
+-		requestID := c.GetHeader("X-Request-ID")
++		// Use underscore to ignore error value
++		requestID, _ := c.GetHeader("X-Request-ID")
+ 		if requestID == "" {
+ 			requestID = uuid.New().String()
+ 		}

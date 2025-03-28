@@ -18,6 +18,7 @@ import (
 	"github.com/namanag97/call_in_go/call-processor/internal/worker"
 )
 
+
 // Service errors
 var (
 	ErrTranscriptionNotFound = domain.ErrNotFound
@@ -99,8 +100,7 @@ func (s *Service) StartTranscription(ctx context.Context, req TranscriptionReque
 		return nil, ErrInvalidInput
 	}
 
-	// Check if recording exists
-	recording, err := s.recordingRepository.Get(ctx, req.RecordingID)
+	_, err := s.recordingRepository.Get(ctx, req.RecordingID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get recording: %w", err)
 	}
@@ -118,6 +118,7 @@ func (s *Service) StartTranscription(ctx context.Context, req TranscriptionReque
 		// Unexpected error
 		return nil, fmt.Errorf("failed to check existing transcription: %w", err)
 	}
+
 
 	// Set defaults if not provided
 	language := req.Language

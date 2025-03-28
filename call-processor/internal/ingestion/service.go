@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json" 
 	"errors"
 	"fmt"
 	"io"
@@ -12,8 +13,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
+	
 	"github.com/google/uuid"
 	"github.com/namanag97/call_in_go/call-processor/internal/domain"
 	"github.com/namanag97/call_in_go/call-processor/internal/event"
@@ -255,7 +255,6 @@ func (s *Service) isAllowedMimeType(mimeType string) bool {
 	return false
 }
 
-// prepareMetadata prepares the metadata for storage
 func prepareMetadata(metadata map[string]interface{}, defaultCallType string) ([]byte, error) {
 	// Ensure metadata has call_type
 	if metadata == nil {

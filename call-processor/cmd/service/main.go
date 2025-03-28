@@ -6,6 +6,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 	
@@ -20,41 +22,23 @@ import (
 	"github.com/namanag97/call_in_go/call-processor/internal/storage"
 	"github.com/namanag97/call_in_go/call-processor/internal/transcription"
 	"github.com/namanag97/call_in_go/call-processor/internal/worker"
+	"github.com/namanag97/call_in_go/call-processor/internal/stt"
 )
 
-func main() {
-	// Load environment variables
-	err := godotenv.Load()
-	if err != nil {
-		log.Println("Warning: Error loading .env file:", err)
-	// Controller initialization
-func initControllers(
-	services services,
-	repos repositories,
-	workerManager worker.Manager,
-) []api.Controller {
-	return []api.Controller{
-		api.NewRecordingController(services.ingestionService, repos.recordingRepo),
-		api.NewTranscriptionController(services.transcriptionService, repos.transcriptionRepo),
-		api.NewAnalysisController(services.analysisService, repos.analysisRepo),
-		api.NewJobController(workerManager),
-	}
+// Repository initialization
+type repositories struct {
+	recordingRepo     repository.RecordingRepository
+	transcriptionRepo repository.TranscriptionRepository
+	analysisRepo      repository.AnalysisRepository
+	jobRepo           repository.JobRepository
+	eventRepo         repository.EventRepository
 }
 
-// API server initialization
-func initAPIServer(controllers []api.Controller) *api.Server {
-	config := api.Config{
-		Port:               getEnv("API_PORT", "8080"),
-		BasePath:           getEnv("API_BASE_PATH", ""),
-		AllowedOrigins:     strings.Split(getEnv("CORS_ALLOWED_ORIGINS", "*"), ","),
-		RequestSizeLimit:   int64(getEnvInt("MAX_REQUEST_SIZE_MB", 60) * 1024 * 1024),
-		EnableSwagger:      getEnvBool("ENABLE_SWAGGER", true),
-		EnableMetrics:      getEnvBool("ENABLE_METRICS", true),
-		EnableTracing:      getEnvBool("ENABLE_TRACING", false),
-		TracingServiceName: getEnv("TRACING_SERVICE_NAME", "call-processing-api"),
-	}
-	
-	return api.NewServer(config, controllers...)
+// Service initialization
+type services struct {
+	ingestionService     *ingestion.Service
+	transcriptionService *transcription.Service
+	analysisService      *analysis.Service
 }
 
 // Environment variable helpers
@@ -95,89 +79,35 @@ func getEnvBool(key string, defaultValue bool) bool {
 	
 	return value
 }
-	
-	// Create context that listens for termination signals
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	
-	// Set up signal handling
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigChan
-		log.Printf("Received signal %v, initiating shutdown...", sig)
-		cancel()
-	}()
-	
-	// Initialize database connection
-	dbPool, err := initDatabase()
-	if err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
+
+// Controller initialization
+func initControllers(
+	services services,
+	repos repositories,
+	workerManager worker.Manager,
+) []api.Controller {
+	return []api.Controller{
+		api.NewRecordingController(services.ingestionService, repos.recordingRepo),
+		api.NewTranscriptionController(services.transcriptionService, repos.transcriptionRepo),
+		api.NewAnalysisController(services.analysisService, repos.analysisRepo),
+		api.NewJobController(workerManager),
 	}
-	defer dbPool.Close()
-	
-	// Initialize repositories
-	repos := initRepositories(dbPool)
-	
-	// Initialize storage client
-	storageClient, err := initStorageClient()
-	if err != nil {
-		log.Fatalf("Failed to initialize storage client: %v", err)
+}
+
+// API server initialization
+func initAPIServer(controllers []api.Controller) *api.Server {
+	config := api.Config{
+		Port:               getEnv("API_PORT", "8080"),
+		BasePath:           getEnv("API_BASE_PATH", ""),
+		AllowedOrigins:     strings.Split(getEnv("CORS_ALLOWED_ORIGINS", "*"), ","),
+		RequestSizeLimit:   int64(getEnvInt("MAX_REQUEST_SIZE_MB", 60) * 1024 * 1024),
+		EnableSwagger:      getEnvBool("ENABLE_SWAGGER", true),
+		EnableMetrics:      getEnvBool("ENABLE_METRICS", true),
+		EnableTracing:      getEnvBool("ENABLE_TRACING", false),
+		TracingServiceName: getEnv("TRACING_SERVICE_NAME", "call-processing-api"),
 	}
 	
-	// Initialize event system
-	eventBus, err := initEventSystem(repos.eventRepo)
-	if err != nil {
-		log.Fatalf("Failed to initialize event system: %v", err)
-	}
-	
-	// Start event bus
-	if kafkaEventBus, ok := eventBus.(*event.KafkaEventBus); ok {
-		err = kafkaEventBus.Start()
-		if err != nil {
-			log.Fatalf("Failed to start event bus: %v", err)
-		}
-		defer kafkaEventBus.Stop()
-	}
-	
-	// Initialize worker manager
-	workerManager := initWorkerManager(repos.jobRepo)
-	
-	// Initialize STT client
-	sttClient := initSTTClient()
-	
-	// Initialize services
-	services := initServices(repos, storageClient, eventBus, workerManager, sttClient)
-	
-	// Start worker manager
-	err = workerManager.Start()
-	if err != nil {
-		log.Fatalf("Failed to start worker manager: %v", err)
-	}
-	defer workerManager.Stop()
-	
-	// Initialize API controllers
-	controllers := initControllers(services, repos, workerManager)
-	
-	// Initialize API server
-	apiServer := initAPIServer(controllers)
-	
-	// Start API server in a goroutine
-	go func() {
-		log.Printf("Starting API server on port %s...", getEnv("API_PORT", "8080"))
-		if err := apiServer.Start(); err != nil {
-			log.Fatalf("Failed to start API server: %v", err)
-		}
-	}()
-	
-	// Wait for context cancellation (from signal handler)
-	<-ctx.Done()
-	log.Println("Shutting down gracefully...")
-	
-	// Perform cleanup
-	time.Sleep(2 * time.Second) // Give ongoing requests time to complete
-	
-	log.Println("Shutdown complete")
+	return api.NewServer(config, controllers...)
 }
 
 // Database initialization
@@ -213,15 +143,6 @@ func initDatabase() (*pgxpool.Pool, error) {
 	
 	log.Println("Database connection established")
 	return pool, nil
-}
-
-// Repository initialization
-type repositories struct {
-	recordingRepo     repository.RecordingRepository
-	transcriptionRepo repository.TranscriptionRepository
-	analysisRepo      repository.AnalysisRepository
-	jobRepo           repository.JobRepository
-	eventRepo         repository.EventRepository
 }
 
 func initRepositories(dbPool *pgxpool.Pool) repositories {
@@ -307,12 +228,6 @@ func initSTTClient() stt.Client {
 }
 
 // Service initialization
-type services struct {
-	ingestionService     *ingestion.Service
-	transcriptionService *transcription.Service
-	analysisService      *analysis.Service
-}
-
 func initServices(
 	repos repositories,
 	storageClient storage.Client,
@@ -383,4 +298,95 @@ func initServices(
 		transcriptionService: transcriptionService,
 		analysisService:      analysisService,
 	}
+}
+
+func main() {
+	// Load environment variables
+	err := godotenv.Load()
+	if err != nil {
+		log.Println("Warning: Error loading .env file:", err)
+	}
+	
+	// Create context that listens for termination signals
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	
+	// Set up signal handling
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigChan
+		log.Printf("Received signal %v, initiating shutdown...", sig)
+		cancel()
+	}()
+	
+	// Initialize database connection
+	dbPool, err := initDatabase()
+	if err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
+	defer dbPool.Close()
+	
+	// Initialize repositories
+	repos := initRepositories(dbPool)
+	
+	// Initialize storage client
+	storageClient, err := initStorageClient()
+	if err != nil {
+		log.Fatalf("Failed to initialize storage client: %v", err)
+	}
+	
+	// Initialize event system
+	eventBus, err := initEventSystem(repos.eventRepo)
+	if err != nil {
+		log.Fatalf("Failed to initialize event system: %v", err)
+	}
+	
+	// Start event bus
+	if kafkaEventBus, ok := eventBus.(*event.KafkaEventBus); ok {
+		err = kafkaEventBus.Start()
+		if err != nil {
+			log.Fatalf("Failed to start event bus: %v", err)
+		}
+		defer kafkaEventBus.Stop()
+	}
+	
+	// Initialize worker manager
+	workerManager := initWorkerManager(repos.jobRepo)
+	
+	// Initialize STT client
+	sttClient := initSTTClient()
+	
+	// Initialize services
+	services := initServices(repos, storageClient, eventBus, workerManager, sttClient)
+	
+	// Start worker manager
+	err = workerManager.Start()
+	if err != nil {
+		log.Fatalf("Failed to start worker manager: %v", err)
+	}
+	defer workerManager.Stop()
+	
+	// Initialize API controllers
+	controllers := initControllers(services, repos, workerManager)
+	
+	// Initialize API server
+	apiServer := initAPIServer(controllers)
+	
+	// Start API server in a goroutine
+	go func() {
+		log.Printf("Starting API server on port %s...", getEnv("API_PORT", "8080"))
+		if err := apiServer.Start(); err != nil {
+			log.Fatalf("Failed to start API server: %v", err)
+		}
+	}()
+	
+	// Wait for context cancellation (from signal handler)
+	<-ctx.Done()
+	log.Println("Shutting down gracefully...")
+	
+	// Perform cleanup
+	time.Sleep(2 * time.Second) // Give ongoing requests time to complete
+	
+	log.Println("Shutdown complete")
 }

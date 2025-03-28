@@ -1,12 +1,14 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
@@ -153,6 +155,7 @@ func RequestIDMiddleware() gin.HandlerFunc {
 }
 
 // ErrorHandlerMiddleware handles errors centrally
+// Corrected ErrorHandlerMiddleware
 func ErrorHandlerMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Next()
@@ -160,7 +163,7 @@ func ErrorHandlerMiddleware() gin.HandlerFunc {
 		// Check if there are any errors
 		if len(c.Errors) > 0 {
 			// Handle the error - could have different strategies based on error type
-			err := c.Errors.Last().Err
+			err := c.Errors.Last().Err  // Fixed: Using single variable assignment
 			
 			statusCode := http.StatusInternalServerError
 			errorResponse := ErrorResponse{
@@ -168,8 +171,10 @@ func ErrorHandlerMiddleware() gin.HandlerFunc {
 				Message: "An unexpected error occurred",
 			}
 			
-			// Check error type and set appropriate status code and response
-			// This would be expanded based on actual error types in the application
+			// Using the error to customize the response
+			if err != nil {
+				errorResponse.Message = err.Error()
+			}
 			
 			c.JSON(statusCode, errorResponse)
 		}
@@ -184,6 +189,16 @@ func MockAuthMiddleware() gin.HandlerFunc {
 		c.Set("userID", uuid.MustParse("00000000-0000-0000-0000-000000000000"))
 		c.Next()
 	}
+}
+
+// FIX: The getHostname function with unused error
+// Change from:
+// getHostname() (string, error) {
+// To:
+// getHostname() string {
+func getHostname() string {
+	// In a real implementation, use os.Hostname() or container ID
+	return "worker-" + uuid.New().String()[:8]
 }
 
 // OpenAPI spec for Swagger documentation
